@@ -32,7 +32,8 @@ MPI_Comm cart_comm;             // Cartesian communicator
 
 // MPI datatypes, you may have to add more.
 MPI_Datatype border_row_t,
-             border_col_t;
+             border_col_t,
+             region_t;
 
 
 unsigned char *image,           // Entire image, only on rank 0
@@ -71,36 +72,63 @@ pixel_t pop(stack_t* stack){
 // Check if two pixels are similar. The hardcoded threshold can be changed.
 // More advanced similarity checks could have been used.
 int similar(unsigned char* im, pixel_t p, pixel_t q){
+    
     int a = im[p.x +  p.y * image_size[1]];
     int b = im[q.x +  q.y * image_size[1]];
     int diff = abs(a-b);
     return diff < 2;
+
 }
 
 
 // Create and commit MPI datatypes
 void create_types(){
-    
+    int starts[2]   = {0,0}; 
+
+    MPI_Datatype temp_type;
+    MPI_Type_create_subarray(2, image_size, local_image_size, starts, MPI_ORDER_C, MPI_CHAR, &temp_type);
+    MPI_Type_create_resized(temp_type, 0, local_image_size[0]*sizeof(unsigned char), &region_t);
+
+    MPI_Type_commit(&region_t);
 }
 
 
 // Send image from rank 0 to all ranks, from image to local_image
 void distribute_image(){
-    
-    
+   /* scatter the array to all processors */
+    int sendcounts[size];
+    int displs[size];
+
+    if (rank == 0) {
+        for (int i=0; i<size; i++) sendcounts[i] = 1;
+        int disp = 0;
+
+        //FIXME: Probably wrong. Also comments
+        for (int i=0; i<dims[1]; i++) {
+            for (int j=0; j<dims[0]; j++) {
+                displs[i*dims[1]+j] = disp;
+                disp += 1;
+            }
+            disp += ((image_size[0]/dims[1])-1)*dims[0]; //FIXME probably wrong
+        }
+    } 
+
+
+    MPI_Scatterv(image, sendcounts, displs, region_t, local_image, 
+                (image_size[0]*image_size[1]/size), MPI_INT, 0, cart_comm);
+
+    printf("Local process on rank %d got files! \n", rank);
 }
 
 
 // Exchange borders with neighbour ranks
 void exchange(stack_t* stack){
     
-    
 }
 
 
 // Gather region bitmap from all ranks to rank 0, from local_region to region
 void gather_region(){
-    
     
 }
 
@@ -235,13 +263,13 @@ int main(int argc, char** argv){
     
     distribute_image();
 
-    grow_region();
+    //grow_region();
     
-    gather_region();
+    //gather_region();
     
     MPI_Finalize();
     
-    write_image();
+    //write_image();
     
     exit(0);
 }
