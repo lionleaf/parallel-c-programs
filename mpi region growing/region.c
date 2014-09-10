@@ -102,8 +102,8 @@ int malloc2dchar(char ***array, int n, int m) {
 }
 //TODO: delete
 void generate_debug_image(){
-    image_size[0] = 6;
-    image_size[1] = 6;
+    image_size[0] = 8;
+    image_size[1] = 8;
 
     local_image_size[0] = image_size[0]/dims[0];
     local_image_size[1] = image_size[1]/dims[1];
@@ -140,12 +140,9 @@ void generate_debug_image(){
 void create_types(){
     int starts[2]   = {0,0}; 
 
-    //MPI_Datatype temp_type;
+    MPI_Datatype temp_type;
     MPI_Type_create_subarray(2, image_size, local_image_size, starts
                             ,MPI_ORDER_C, MPI_UNSIGNED_CHAR, &temp_type);
-
-    printf("Image size 0: %d 1:%d \n ", image_size[0],image_size[1]);
-    printf("local Image size 0: %d 1:%d \n ", local_image_size[0],local_image_size[1]);
 
     MPI_Type_create_resized(temp_type, 0, local_image_size[0]*sizeof(unsigned char), &region_t);
 
@@ -160,18 +157,21 @@ void distribute_image(){
     int displs[size];
 
     if (rank == 0) {
+        printf("dims 0: %d, 1: %d \n",dims[0],dims[1]);
         for (int i=0; i<size; i++) sendcounts[i] = 1;
         int disp = 0;
-        //FIXME: Probably wrong. Also comments
+        printf("disp = [");
         for (int i=0; i<dims[1]; i++) {
             for (int j=0; j<dims[0]; j++) {
-                displs[i*dims[1]+j] = disp;
+                displs[i*dims[1]+j] = 0; //disp;
+                printf(", '%d'",disp);
                 disp += 1;
             }
-            disp += (local_image_size[0]-1)*dims[0]; //FIXME probably wrong
+            disp += (local_image_size[1]-1)*dims[0]; //FIXME probably wrong
         }
+        printf("]\n");
     } 
-
+    
 
     MPI_Scatterv(image, sendcounts, displs, region_t, local_image,
                  local_image_size[0]*local_image_size[1], MPI_UNSIGNED_CHAR,
