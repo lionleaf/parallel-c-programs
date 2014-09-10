@@ -33,6 +33,7 @@ MPI_Comm cart_comm;             // Cartesian communicator
 // MPI datatypes, you may have to add more.
 MPI_Datatype border_row_t,
              border_col_t,
+             temp_type, //TODO delete
              region_t;
 
 
@@ -72,7 +73,6 @@ pixel_t pop(stack_t* stack){
 // Check if two pixels are similar. The hardcoded threshold can be changed.
 // More advanced similarity checks could have been used.
 int similar(unsigned char* im, pixel_t p, pixel_t q){
-    
     int a = im[p.x +  p.y * image_size[1]];
     int b = im[q.x +  q.y * image_size[1]];
     int diff = abs(a-b);
@@ -80,13 +80,73 @@ int similar(unsigned char* im, pixel_t p, pixel_t q){
 
 }
 
+//TODO: Remove
+int malloc2dchar(char ***array, int n, int m) {
+
+    /* allocate the n*m contiguous items */
+    char *p = (char *)malloc(n*m*sizeof(char));
+    if (!p) return -1;
+
+    /* allocate the row pointers into the memory */
+    (*array) = (char **)malloc(n*sizeof(char*));
+    if (!(*array)) {
+        free(p);
+        return -1;
+    }
+
+    /* set up the pointers into the contiguous memory */
+    for (int i=0; i<n; i++)
+        (*array)[i] = &(p[i*m]);
+
+    return 0;
+}
+//TODO: delete
+void generate_debug_image(){
+    image_size[0] = 6;
+    image_size[1] = 6;
+
+    local_image_size[0] = image_size[0]/dims[0];
+    local_image_size[1] = image_size[1]/dims[1];
+    local_image = (unsigned char*)malloc(
+            sizeof(unsigned char)*local_image_size[0]*local_image_size[1]);
+
+    if(rank == 0){
+        image = (unsigned char*)malloc(sizeof(unsigned char) * image_size[0]*image_size[1]);
+        for (int i=0; i<image_size[1]; i++) {
+            for (int j=0; j<image_size[0]; j++)
+                image[j +  i * image_size[0]] = (image_size[1]*i+j) ;
+        }    
+
+        printf("Image! \n", rank);
+        for (int i=0; i<image_size[0]; i++) {
+            putchar('|');
+            for (int j=0; j<image_size[1]; j++) {
+                //putchar(image[j +  i * image_size[0]]);
+                printf("%d ", image[j +  i * image_size[0]]);
+            }
+            printf("|\n");
+        }
+
+        printf("Image layout! \n", rank);
+        for (int j=0; j<image_size[0]*image_size[1]; j++) {
+            //putchar(image[j]);
+            printf("%d ",image[j]);
+        }
+        printf("\n");
+    }
+}
 
 // Create and commit MPI datatypes
 void create_types(){
     int starts[2]   = {0,0}; 
 
-    MPI_Datatype temp_type;
-    MPI_Type_create_subarray(2, image_size, local_image_size, starts, MPI_ORDER_C, MPI_CHAR, &temp_type);
+    //MPI_Datatype temp_type;
+    MPI_Type_create_subarray(2, image_size, local_image_size, starts
+                            ,MPI_ORDER_C, MPI_UNSIGNED_CHAR, &temp_type);
+
+    printf("Image size 0: %d 1:%d \n ", image_size[0],image_size[1]);
+    printf("local Image size 0: %d 1:%d \n ", local_image_size[0],local_image_size[1]);
+
     MPI_Type_create_resized(temp_type, 0, local_image_size[0]*sizeof(unsigned char), &region_t);
 
     MPI_Type_commit(&region_t);
@@ -102,22 +162,43 @@ void distribute_image(){
     if (rank == 0) {
         for (int i=0; i<size; i++) sendcounts[i] = 1;
         int disp = 0;
-
         //FIXME: Probably wrong. Also comments
         for (int i=0; i<dims[1]; i++) {
             for (int j=0; j<dims[0]; j++) {
                 displs[i*dims[1]+j] = disp;
                 disp += 1;
             }
-            disp += ((image_size[0]/dims[1])-1)*dims[0]; //FIXME probably wrong
+            disp += (local_image_size[0]-1)*dims[0]; //FIXME probably wrong
         }
     } 
 
 
-    MPI_Scatterv(image, sendcounts, displs, region_t, local_image, 
-                (image_size[0]*image_size[1]/size), MPI_INT, 0, cart_comm);
+    MPI_Scatterv(image, sendcounts, displs, region_t, local_image,
+                 local_image_size[0]*local_image_size[1], MPI_UNSIGNED_CHAR,
+                  0, MPI_COMM_WORLD);
 
-    printf("Local process on rank %d got files! \n", rank);
+
+    MPI_Barrier(MPI_COMM_WORLD);
+    for (int p=0; p<size; p++) {
+        if (rank == p) {
+            printf("Local process on rank %d is:\n", rank);
+            for (int i=0; i<local_image_size[0]; i++) {
+                putchar('|');
+                for (int j=0; j<local_image_size[1]; j++) {
+                    //putchar(local_image[j +  i * local_image_size[0]]);
+                    printf("%d ",local_image[j +  i * local_image_size[0]]);
+                }
+                printf("|\n");
+            }
+            printf("Local process on rank %d is:\n", rank);
+            for (int i=0; i<local_image_size[0]*local_image_size[1]; i++) {
+                putchar(local_image[i]);
+            }
+            printf("\n");
+        }
+        MPI_Barrier(MPI_COMM_WORLD);
+    }
+
 }
 
 
@@ -257,7 +338,8 @@ int main(int argc, char** argv){
     
     init_mpi(argc, argv);
     
-    load_and_allocate_images(argc, argv);
+//    load_and_allocate_images(argc, argv);
+    generate_debug_image();
     
     create_types();
     
