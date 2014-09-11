@@ -75,9 +75,8 @@ pixel_t pop(stack_t* stack){
 // More advanced similarity checks could have been used.
 int similar(unsigned char* im, pixel_t p, pixel_t q){
 
-    //We add 1 to both coordinates to account for the halo
-    int a = im[(p.x+1) + (p.y+1) * (local_image_size[1]+2)];
-    int b = im[(q.x+1) +  (q.y+1) * (local_image_size[1]+2)];
+    int a = im[p.x + p.y * (local_image_size[1] + 2)];
+    int b = im[q.x + q.y * (local_image_size[1] + 2)];
     int diff = abs(a-b);
     return diff < 2;
 
@@ -103,45 +102,6 @@ int malloc2dchar(char ***array, int n, int m) {
 
     return 0;
 }
-//TODO: delete
-void generate_debug_image(){
-    image_size[0] = 16;
-    image_size[1] = 16;
-
-    local_image_size[0] = image_size[0]/dims[0];
-    local_image_size[1] = image_size[1]/dims[1];
-
-    int lsize = local_image_size[0]*local_image_size[1];
-    int lsize_border = (local_image_size[0] + 2)*(local_image_size[1] + 2);
-    local_image = (unsigned char*)calloc(sizeof(unsigned char),lsize_border);
-    local_region = (unsigned char*)calloc(sizeof(unsigned char),lsize_border);
-
-    srand(1337);
-    if(rank == 0){
-        image = (unsigned char*)malloc(sizeof(unsigned char) * image_size[0]*image_size[1]);
-        for (int i=0; i<image_size[1]; i++) {
-            for (int j=0; j<image_size[0]; j++)
-                image[j +  i * image_size[0]] = rand()%10 ;
-        }    
-
-        printf("Image! \n", rank);
-        for (int i=0; i<image_size[0]; i++) {
-            putchar('|');
-            for (int j=0; j<image_size[1]; j++) {
-                //putchar(image[j +  i * image_size[0]]);
-                printf("%d ", image[j +  i * image_size[0]]);
-            }
-            printf("|\n");
-        }
-
-        printf("Image layout! \n", rank);
-        for (int j=0; j<image_size[0]*image_size[1]; j++) {
-            //putchar(image[j]);
-            printf("%d ",image[j]);
-        }
-        printf("\n");
-    }
-}
 
 // Create and commit MPI datatypes
 void create_types(){
@@ -163,10 +123,10 @@ void distribute_image(){
     if(rank == 0){
         for(int x = 0; x < dims[0]; x++){
             for(int y = 0; y < dims[1]; y++){
-                int send_rank;
+                int send_rank = 0;
                 int send_coords[2] = {x,y};
                 MPI_Cart_rank(cart_comm, &send_coords, &send_rank);
-                printf("Sending to (%d, %d),  rank %d.\n",x, y, send_rank);
+                printf("Sending to (%d, %d),  rank %d.\n", x, y, send_rank);
 
                 //Send all the rows excluding halo
                 for(int i = 0; i < local_image_size[1]; i++){
@@ -197,8 +157,61 @@ void distribute_image(){
                 TAG, cart_comm, &status);
     }
 
+}
 
+void distribute_image_halo(){
+    if(rank == 0){
+        for(int x = 0; x < dims[0]; x++){
+            for(int y = 0; y < dims[1]; y++){
+                int send_rank;
+                int send_coords[2] = {x,y};
+                MPI_Cart_rank(cart_comm, &send_coords, &send_rank);
+                printf("Sending to (%d, %d),  rank %d.\n",x, y, send_rank);
 
+                //Send north halo 
+                if(y > 0){
+                    char* row_start 
+                        = &image[x*local_image_size[0]*image_size[0] //x grid colums
+                        +(y-1)*local_image_size[1]                  //y-1 grid rows
+                        +(local_image_size[0]-1)*image_size[0]];    //Fetch last row
+
+                    MPI_Send(row_start, local_image_size[0]
+                            ,MPI_UNSIGNED_CHAR, send_rank
+                            ,TAG, cart_comm);
+
+                }
+                
+                //Send south halo 
+                if(y < dims[1] - 1){
+
+                }
+                
+                //Send west halo 
+                if(x > 0){
+
+                }
+                
+                //Send east halo 
+                if(x < dims[0] - 1){
+
+                }
+                //Send halo columns
+            }
+        }
+    }
+
+    MPI_Status status;
+    //Receive all the rows excluding halo
+    for(int i = 0; i < local_image_size[1]; i++){
+        if(north >= 0){
+            char* row_start = 
+                &local_image[0];
+
+            MPI_Recv(row_start,
+                    local_image_size[0], MPI_UNSIGNED_CHAR, 0,
+                    TAG, cart_comm, &status);
+        }
+    }
 }
 
 
@@ -222,7 +235,7 @@ int finished(){
 
 // Check if pixel is inside local image
 int inside(pixel_t p){
-    return (p.x >= 0 && p.x < local_image_size[1] && p.y >= 0 && p.y < local_image_size[0]);
+    return (p.x > 0 && p.x <= local_image_size[1] && p.y > 0 && p.y <= local_image_size[0]);
 }
 
 
@@ -232,14 +245,14 @@ void add_seeds(stack_t* stack){
     int seeds [8];
 
     //Reordered for easier editing
-    seeds[0] = seed_pos-1;
-    seeds[1] = seed_pos-1;
-    seeds[3] = seed_pos-1;
-    seeds[6] = seed_pos-1;
-    seeds[2] = local_image_size[1]-seed_pos;
-    seeds[4] = local_image_size[1]-seed_pos;
-    seeds[5] = local_image_size[0]-seed_pos;
-    seeds[7] = local_image_size[0]-seed_pos;
+    seeds[0] = seed_pos;
+    seeds[1] = seed_pos;
+    seeds[3] = seed_pos;
+    seeds[6] = seed_pos;
+    seeds[2] = local_image_size[1]+1-seed_pos;
+    seeds[4] = local_image_size[1]+1-seed_pos;
+    seeds[5] = local_image_size[0]+1-seed_pos;
+    seeds[7] = local_image_size[0]+1-seed_pos;
     
     for(int i = 0; i < 4; i++){
         pixel_t seed;
@@ -262,7 +275,7 @@ void grow_region(){
     while(stack->size > 0){
         pixel_t pixel = pop(stack);
         
-        local_region[pixel.y * local_image_size[1] + pixel.x] = 1;
+        local_region[pixel.y * (local_image_size[1] + 2) + pixel.x] = 1;
         
         
         int dx[4] = {0,0,1,-1}, dy[4] = {1,-1,0,0};
@@ -276,11 +289,12 @@ void grow_region(){
             }
             
             
-            if(local_region[candidate.y * local_image_size[1] + candidate.x]){
+            if(local_region[candidate.y * (local_image_size[1] + 2) + candidate.x]){
                 continue;
             }
             
             if(similar(local_image, pixel, candidate)){
+                local_region[candidate.y * (local_image_size[1] + 2) + candidate.x] = 1;
                 push(stack,candidate);
             }
         }
@@ -302,6 +316,45 @@ void init_mpi(int argc, char** argv){
     MPI_Cart_shift( cart_comm, 1, 1, &west, &east );
 }
 
+//TODO: delete
+void generate_debug_image(){
+    image_size[0] = 16;
+    image_size[1] = 16;
+
+    local_image_size[0] = image_size[0]/dims[0];
+    local_image_size[1] = image_size[1]/dims[1];
+
+    int lsize = local_image_size[0]*local_image_size[1];
+    int lsize_border = (local_image_size[0] + 2)*(local_image_size[1] + 2);
+    local_image = (unsigned char*)calloc(sizeof(unsigned char),lsize_border);
+    local_region = (unsigned char*)calloc(sizeof(unsigned char),lsize_border);
+
+    srand(1337);
+    if(rank == 0){
+        image = (unsigned char*)malloc(sizeof(unsigned char) * image_size[0]*image_size[1]);
+        for (int i=0; i<image_size[1]; i++) {
+            for (int j=0; j<image_size[0]; j++)
+                image[j +  i * image_size[0]] = rand()%4;
+        }    
+
+        printf("Image! \n", rank);
+        for (int i=0; i<image_size[0]; i++) {
+            putchar('|');
+            for (int j=0; j<image_size[1]; j++) {
+                //putchar(image[j +  i * image_size[0]]);
+                printf("%d ", image[j +  i * image_size[0]]);
+            }
+            printf("|\n");
+        }
+
+        printf("Image layout! \n", rank);
+        for (int j=0; j<image_size[0]*image_size[1]; j++) {
+            //putchar(image[j]);
+            printf("%d ",image[j]);
+        }
+        printf("\n");
+    }
+}
 
 void load_and_allocate_images(int argc, char** argv){
 
@@ -343,7 +396,6 @@ void print_debug_info(){
             for (int i=0; i<local_image_size[0]+2; i++) {
                 putchar('|');
                 for (int j=0; j<local_image_size[1]+2; j++) {
-                    //putchar(local_image[j +  i * local_image_size[0]]);
                     printf("%d ",local_image[j +  i * (local_image_size[0]+2)]);
                 }
                 printf("|\n");
@@ -351,11 +403,10 @@ void print_debug_info(){
         }
         if (rank == p) {
             printf("Region on rank %d is:\n", rank);
-            for (int i=0; i<local_image_size[0]; i++) {
+            for (int i=0; i<local_image_size[0]+2; i++) {
                 putchar('|');
-                for (int j=0; j<local_image_size[1]; j++) {
-                    //putchar(local_image[j +  i * local_image_size[0]]);
-                    printf("%d ",local_region[j +  i * (local_image_size[0])]);
+                for (int j=0; j<local_image_size[1]+2; j++) {
+                    printf("%d ",local_region[j +  i * (local_image_size[0]+2)]);
                 }
                 printf("|\n");
             }
