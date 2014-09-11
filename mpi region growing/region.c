@@ -15,6 +15,7 @@ typedef struct{
     pixel_t* pixels;
 } stack_t;
 
+const int TAG = 2;
 
 // Global variables
 int rank,                       // MPI rank
@@ -152,30 +153,87 @@ void create_types(){
 
 // Send image from rank 0 to all ranks, from image to local_image
 void distribute_image(){
-   /* scatter the array to all processors */
-    int sendcounts[size];
-    int displs[size];
-
-    if (rank == 0) {
-        printf("dims 0: %d, 1: %d \n",dims[0],dims[1]);
-        for (int i=0; i<size; i++) sendcounts[i] = 1;
-        int disp = 0;
-        printf("disp = [");
-        for (int i=0; i<dims[1]; i++) {
-            for (int j=0; j<dims[0]; j++) {
-                displs[i*dims[1]+j] = 0; //disp;
-                printf(", '%d'",disp);
-                disp += 1;
-            }
-            disp += (local_image_size[1]-1)*dims[0]; //FIXME probably wrong
-        }
-        printf("]\n");
-    } 
     
+    if(rank == 0){
+        for(int x = 0; x < dims[0]; x++){
+            for(int y = 0; y < dims[1]; y++){
+                int send_rank;
+                int send_coords[2] = {x,y};
+                MPI_Cart_rank(cart_comm, &send_coords, &send_rank);
+                printf("Sending to (%d, %d),  rank %d.\n",x, y, send_rank);
 
-    MPI_Scatterv(image, sendcounts, displs, region_t, local_image,
-                 local_image_size[0]*local_image_size[1], MPI_UNSIGNED_CHAR,
-                  0, MPI_COMM_WORLD);
+                //Send all the rows excluding halo
+                for(int i = 0; i < local_image_size[1]; i++){
+                    char* row_start 
+                        = &image[x*local_image_size[0]*image_size[0]
+                                +y*local_image_size[1]
+                                +i*image_size[0]];
+
+                    MPI_Send(row_start, local_image_size[0]
+                            ,MPI_UNSIGNED_CHAR, send_rank
+                            ,TAG, cart_comm);
+                }
+
+                //Send above halo row
+                if(y > 0){
+                    char* row_start 
+                        = &image[x*local_image_size[0]*image_size[0]
+                                +y*local_image_size[1]
+                                -image_size[0]];
+
+                    MPI_Send(row_start, local_image_size[0]
+                            ,MPI_UNSIGNED_CHAR, send_rank
+                            ,TAG, cart_comm);
+                }
+
+                //Send below halo row
+                if(y < dims[1] - 1){
+                    char* row_start 
+                        = &image[x*local_image_size[0]*image_size[0]
+                                +y*local_image_size[1]
+                                +(local_image_size[1]+1)*image_size[0]];
+
+                    MPI_Send(row_start, local_image_size[0]
+                            ,MPI_UNSIGNED_CHAR, send_rank
+                            ,TAG, cart_comm);
+                }
+
+
+
+                //Send halo columns
+            }
+        }
+    }else{
+        MPI_Status status;
+        //Receive all the rows excluding halo
+        for(int i = 0; i < local_image_size[1]; i++){
+            char* row_start = &local_image[0];
+            MPI_Recv(&local_image[i*local_image_size[0]],
+                    local_image_size[0], MPI_UNSIGNED_CHAR, 0,
+                    TAG, cart_comm, &status);
+        }
+
+        //Send above halo row
+        if(coords[1] > 0){
+            char* row_start = &local_image[0];
+
+            MPI_Recv(row_start, local_image_size[0]
+                    ,MPI_UNSIGNED_CHAR, send_rank
+                    ,TAG, cart_comm);
+        }
+
+        //Send below halo row
+        if(coords[1] < dims[1] - 1){
+            char* row_start 
+                = &local_image[(local_image_size[0]-1)
+                             *local_image_size[1]];
+
+            MPI_Recv(row_start, local_image_size[0]
+                    , MPI_UNSIGNED_CHAR, 0,
+                    TAG, cart_comm, &status);
+        }
+    }
+
 
 
     MPI_Barrier(MPI_COMM_WORLD);
@@ -190,11 +248,11 @@ void distribute_image(){
                 }
                 printf("|\n");
             }
-            printf("Local process on rank %d is:\n", rank);
+            /*printf("Local process on rank %d is:\n", rank);
             for (int i=0; i<local_image_size[0]*local_image_size[1]; i++) {
-                putchar(local_image[i]);
+                printf("%d ",local_image[i]);
             }
-            printf("\n");
+            printf("\n");*/
         }
         MPI_Barrier(MPI_COMM_WORLD);
     }
