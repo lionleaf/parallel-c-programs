@@ -107,13 +107,13 @@ int malloc2dchar(char ***array, int n, int m) {
 void create_types(){
     int starts[2]   = {0,0}; 
 
-    MPI_Type_vector(local_image_size[1],
+    MPI_Type_vector(local_image_size[0],
                     1,
                     image_size[0],
                     MPI_UNSIGNED_CHAR,
                     &haloless_col_t);
 
-    MPI_Type_vector(local_image_size[1],
+    MPI_Type_vector(local_image_size[0],
                     1,
                     local_image_size[0] + 2,
                     MPI_UNSIGNED_CHAR,
@@ -129,8 +129,8 @@ void create_types(){
 void distribute_image(){
     
     if(rank == 0){
-        for(int x = 0; x < dims[0]; x++){
-            for(int y = 0; y < dims[1]; y++){
+        for(int x = 0; x < dims[1]; x++){
+            for(int y = 0; y < dims[0]; y++){
                 int send_rank = 0;
                 int send_coords[2] = {y,x};
                 MPI_Cart_rank(cart_comm, send_coords, &send_rank);
@@ -146,7 +146,6 @@ void distribute_image(){
                             ,MPI_UNSIGNED_CHAR, send_rank
                             ,TAG, cart_comm);
                 }
-                //Send halo columns
             }
         }
     }
@@ -168,8 +167,8 @@ void distribute_image(){
 
 void distribute_image_halo(){
     if(rank == 0){
-        for(int x = 0; x < dims[0]; x++){
-            for(int y = 0; y < dims[1]; y++){
+        for(int x = 0; x < dims[1]; x++){
+            for(int y = 0; y < dims[0]; y++){
                 int send_rank;
                 int send_coords[2] = {y,x};
                 MPI_Cart_rank(cart_comm, send_coords, &send_rank);
@@ -455,9 +454,33 @@ void gather_region(){
 }
 
 // Determine if all ranks are finished. You may have to add arguments.
-// You dont have to have this check as a seperate function
-int finished(){
-   
+int finished(int local_finish){
+    int* finished = malloc(sizeof(int));
+    *finished = local_finish;
+    MPI_Send(finished, 1, MPI_INT, 0, TAG, cart_comm);
+    
+    int* bcast_buffer = malloc(sizeof(int));
+    int global_finish = 1;
+
+    if(rank == 0){
+        MPI_Status status;
+        int* buffer = malloc(sizeof(int));
+        for(int i = 0; i < size; i++){
+            MPI_Recv(buffer, 1, MPI_INT, i, TAG, cart_comm, &status);
+            global_finish *= *buffer;
+        }
+        free(buffer);
+        *bcast_buffer = global_finish;
+        printf("Finish %d \n", global_finish);
+    }
+
+    MPI_Bcast(bcast_buffer, 1, MPI_INT, 0, cart_comm);
+    free(finished);
+
+    global_finish = *bcast_buffer;
+    free(bcast_buffer);
+
+    return global_finish;
 }
 
 
@@ -485,19 +508,18 @@ void add_seeds(stack_t* stack){
     int ranks[4] = {0,0,0,0};
     ranks[0] = 0;
     ranks[2] = size - 1;
-    
+ /*   
     int lower_right;
-    int xy[2] = {0,dims[0] - 1};
+    int xy[2] = {0,dims[1] - 1};
     MPI_Cart_rank(cart_comm, xy, &lower_right);
     ranks[1] = lower_right;
 
     int upper_left; //upper left in the bmp 
-    xy[0] = dims[1] - 1;
+    xy[0] = dims[0] - 1;
     xy[1] = 0;
     MPI_Cart_rank(cart_comm, xy, &upper_left);
-
     ranks[3] = upper_left;
-    
+    */
     
     for(int i = 0; i < 4; i++){
         if(rank != ranks[i]) continue;
@@ -515,7 +537,9 @@ void add_seeds(stack_t* stack){
 void grow_region(){
     stack_t* stack = new_stack();
     add_seeds(stack);
-    for(int tmp = 0; tmp < 4; tmp++){
+    int local_finish = 0;
+    while(!finished(local_finish)){
+        local_finish = 1;
         while(stack->size > 0){
             pixel_t pixel = pop(stack);
 
@@ -540,6 +564,7 @@ void grow_region(){
                 if(similar(local_image, pixel, candidate)){
                     local_region[candidate.y * (local_image_size[1] + 2) + candidate.x] = 1;
                     push(stack,candidate);
+                    local_finish = 0;
                 }
             }
         }
@@ -547,6 +572,10 @@ void grow_region(){
         exchange(stack);
         add_halo_to_stack(stack);
 
+        if(rank == 0){
+            printf("loop \n");
+        }
+        MPI_Barrier(cart_comm);
     }
 }
 
@@ -632,7 +661,7 @@ void write_image(){
     }
 }
 
-void print_debug_info(){
+void print_local_image(){
     MPI_Barrier(MPI_COMM_WORLD);
     for (int p=0; p<size; p++) {
         if (rank == p) {
@@ -683,21 +712,22 @@ void print_region(){
 int main(int argc, char** argv){
     
     init_mpi(argc, argv);
-    
+
     load_and_allocate_images(argc, argv);
     //generate_debug_image();
     
     create_types();
     
     distribute_image();
+    //print_local_image();
 
     distribute_image_halo();
+
 
     grow_region();
     
     gather_region();
     
-    //print_debug_info();
     //print_subregions();
     //print_region();
 
