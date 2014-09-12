@@ -266,7 +266,6 @@ void distribute_image_halo(){
         MPI_Recv(col_start,
                 1, halo_col_t, 0,
                 TAG, cart_comm, &status);
-        printf("got west %d \n ", rank);
     }
 }
 
@@ -377,6 +376,40 @@ void exchange(stack_t* stack){
     }
 }
 
+void add_halo_to_stack(stack_t* stack){
+    for(int rows = 0; rows < 2; rows++){
+        for(int x = 0; x < local_image_size[0] + 2; x++){
+            pixel_t pixel;
+            pixel.x = x;
+            pixel.y = rows?
+                local_image_size[1]+1
+                :0;
+            if(local_region[x + pixel.y * (local_image_size[0] + 2)]){
+                push(stack, pixel);
+            }
+        }
+    }
+    for(int y = 0; y < local_image_size[1] + 2; y++){
+        pixel_t pixel;
+        pixel.x = local_image_size[1] + 1;
+        pixel.y = y; 
+
+        if(local_region[pixel.x + pixel.y * (local_image_size[0] + 2)]){
+            push(stack, pixel);
+        }
+    }
+
+    for(int y = 0; y < local_image_size[1] + 2; y++){
+        pixel_t pixel;
+        pixel.x = 0;
+        pixel.y = y; 
+
+        if(local_region[pixel.x + pixel.y * (local_image_size[0] + 2)]){
+            push(stack, pixel);
+        }
+    }
+}
+
 
 // Gather region bitmap from all ranks to rank 0, from local_region to region
 void gather_region(){
@@ -401,8 +434,8 @@ void gather_region(){
         for(int recv_rank = 0; recv_rank < size; recv_rank++){
             int recv_coords[2] = {0,0};
             MPI_Cart_coords(cart_comm, recv_rank, size, recv_coords);
-            int x = recv_coords[0];
-            int y = recv_coords[1];
+            int x = recv_coords[1];
+            int y = recv_coords[0];
 
             MPI_Status status;
 
@@ -456,14 +489,14 @@ void add_seeds(stack_t* stack){
     int lower_right;
     int xy[2] = {0,dims[0] - 1};
     MPI_Cart_rank(cart_comm, xy, &lower_right);
-    ranks[3] = lower_right;
+    ranks[1] = lower_right;
 
     int upper_left; //upper left in the bmp 
     xy[0] = dims[1] - 1;
     xy[1] = 0;
     MPI_Cart_rank(cart_comm, xy, &upper_left);
 
-    ranks[1] = upper_left;
+    ranks[3] = upper_left;
     
     
     for(int i = 0; i < 4; i++){
@@ -479,39 +512,42 @@ void add_seeds(stack_t* stack){
 }
 
 
-// Region growing, serial implementation
 void grow_region(){
     stack_t* stack = new_stack();
     add_seeds(stack);
-        
-    while(stack->size > 0){
-        pixel_t pixel = pop(stack);
-        
-        local_region[pixel.y * (local_image_size[1] + 2) + pixel.x] = 1;
-        
-        
-        int dx[4] = {0,0,1,-1}, dy[4] = {1,-1,0,0};
-        for(int c = 0; c < 4; c++){
-            pixel_t candidate;
-            candidate.x = pixel.x + dx[c];
-            candidate.y = pixel.y + dy[c];
-            
-            if(!inside(candidate)){
-                continue;
-            }
-            
-            
-            if(local_region[candidate.y * (local_image_size[1] + 2) + candidate.x]){
-                continue;
-            }
-            
-            if(similar(local_image, pixel, candidate)){
-                local_region[candidate.y * (local_image_size[1] + 2) + candidate.x] = 1;
-                push(stack,candidate);
+    for(int tmp = 0; tmp < 4; tmp++){
+        while(stack->size > 0){
+            pixel_t pixel = pop(stack);
+
+            local_region[pixel.y * (local_image_size[1] + 2) + pixel.x] = 1;
+
+
+            int dx[4] = {0,0,1,-1}, dy[4] = {1,-1,0,0};
+            for(int c = 0; c < 4; c++){
+                pixel_t candidate;
+                candidate.x = pixel.x + dx[c];
+                candidate.y = pixel.y + dy[c];
+
+                if(!inside(candidate)){
+                    continue;
+                }
+
+
+                if(local_region[candidate.y * (local_image_size[1] + 2) + candidate.x]){
+                    continue;
+                }
+
+                if(similar(local_image, pixel, candidate)){
+                    local_region[candidate.y * (local_image_size[1] + 2) + candidate.x] = 1;
+                    push(stack,candidate);
+                }
             }
         }
+
+        exchange(stack);
+        add_halo_to_stack(stack);
+
     }
-    exchange(stack);
 }
 
 
