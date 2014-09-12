@@ -134,7 +134,6 @@ void distribute_image(){
                 int send_rank = 0;
                 int send_coords[2] = {y,x};
                 MPI_Cart_rank(cart_comm, send_coords, &send_rank);
-                printf("Sending to (%d, %d),  rank %d.\n", x, y, send_rank);
 
                 //Send all the rows excluding halo
                 for(int i = 0; i < local_image_size[1]; i++){
@@ -234,11 +233,9 @@ void distribute_image_halo(){
         char* start = 
             &local_image[1];
 
-        printf("Receiving north (%d,%d) %d \n ", coords[0],coords[1], rank);
         MPI_Recv(start,
                 local_image_size[0], MPI_UNSIGNED_CHAR, 0,
                 TAG, cart_comm, &status);
-        printf("got north %d \n ", rank);
     }
 
     if(south >= 0){
@@ -247,22 +244,18 @@ void distribute_image_halo(){
                        (local_image_size[0]+1) * (local_image_size[1]+2) //Last row
                         + 1]; //Skip the corner
 
-        printf("Receiving south (%d,%d) %d \n ", coords[0],coords[1], rank);
         MPI_Recv(start,
                 local_image_size[0], MPI_UNSIGNED_CHAR, 0,
                 TAG, cart_comm, &status);
-        printf("got south %d \n ", rank);
     }
 
     if(west >= 0){
         char* col_start = 
             &local_image[local_image_size[0]+2];
 
-        printf("Receiving west (%d,%d) %d \n ", coords[0],coords[1], rank);
         MPI_Recv(col_start,
                 1, halo_col_t, 0,
                 TAG, cart_comm, &status);
-        printf("got west %d \n ", rank);
     }
 
     if(east >= 0){
@@ -270,7 +263,6 @@ void distribute_image_halo(){
             &local_image[
                 (local_image_size[0] + 2) * 2 - 1];
 
-        printf("Receiving west (%d,%d) %d \n ", coords[0],coords[1], rank);
         MPI_Recv(col_start,
                 1, halo_col_t, 0,
                 TAG, cart_comm, &status);
@@ -408,19 +400,21 @@ void gather_region(){
     if(rank == 0){
         for(int recv_rank = 0; recv_rank < size; recv_rank++){
             int recv_coords[2] = {0,0};
-            MPI_Cart_coords(cart_comm, recv_rank, size, &recv_rank);
+            MPI_Cart_coords(cart_comm, recv_rank, size, recv_coords);
             int x = recv_coords[0];
             int y = recv_coords[1];
-            printf(" yolo %d, %d \n", x,y);
 
             MPI_Status status;
 
-            char* start =
-                &region[y * image_size[0] + x * local_image_size[0]];
+            for(int row = 0; row < local_image_size[1]; row++){
+                char* start =
+                    &region[y * local_image_size[1] * image_size[0] 
+                    + row * image_size[0]
+                    + x * local_image_size[0]];
 
-            printf ("Invalid? %d\n", start);
-            MPI_Recv(start, local_image_size[0],
-                    MPI_UNSIGNED_CHAR, recv_rank, TAG, cart_comm, &status);
+                MPI_Recv(start, local_image_size[0],
+                        MPI_UNSIGNED_CHAR, recv_rank, TAG, cart_comm, &status);
+            }
         }
     }
 
@@ -533,7 +527,6 @@ void generate_debug_image(){
 
     srand(1337);
     if(rank == 0){
-        printf("what is happening? \n");
         image = (unsigned char*)calloc(sizeof(unsigned char) , image_size[0]*image_size[1]);
         for (int i=0; i<image_size[1]; i++) {
             for (int j=0; j<image_size[0]; j++)
@@ -550,13 +543,6 @@ void generate_debug_image(){
             }
             printf("|\n");
         }
-
-        printf("Image layout! \n", rank);
-        for (int j=0; j<image_size[0]*image_size[1]; j++) {
-            //putchar(image[j]);
-            printf("%d ",image[j]);
-        }
-        printf("\n");
     }
 }
 
@@ -609,7 +595,7 @@ void print_debug_info(){
     }
 }
 
-void print_regions(){
+void print_subregions(){
 
     for (int p=0; p<size; p++) {
         if (rank == p) {
@@ -626,13 +612,26 @@ void print_regions(){
     }
 }
 
+void print_region(){
+
+    if (rank == 0) {
+        printf("Final region: \n");
+        for (int i=0; i < image_size[0]; i++) {
+            putchar('|');
+            for (int j=0; j < image_size[1]; j++) {
+                printf("%d ",region[j +  i * (image_size[0])]);
+            }
+            printf("|\n");
+        }
+    }
+}
 
 int main(int argc, char** argv){
     
     init_mpi(argc, argv);
     
-    generate_debug_image();
     load_and_allocate_images(argc, argv);
+    //generate_debug_image();
     
     create_types();
     
@@ -642,13 +641,15 @@ int main(int argc, char** argv){
 
     grow_region();
     
-    //print_debug_info();
-    //print_regions();
     gather_region();
     
+    //print_debug_info();
+    //print_subregions();
+    //print_region();
+
     MPI_Finalize();
     
-    //write_image();
+    write_image();
     
     exit(0);
 }
