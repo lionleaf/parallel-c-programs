@@ -436,20 +436,38 @@ int inside(pixel_t p){
 
 // Adding seeds in corners.
 void add_seeds(stack_t* stack){
-    int seed_pos = 2;
+    int seed_pos = 5;
     int seeds [8];
 
     //Reordered for easier editing
     seeds[0] = seed_pos;
     seeds[1] = seed_pos;
+    seeds[2] = local_image_size[1]-seed_pos;
     seeds[3] = seed_pos;
+    seeds[4] = local_image_size[1]-seed_pos;
+    seeds[5] = local_image_size[0]-seed_pos;
     seeds[6] = seed_pos;
-    seeds[2] = local_image_size[1]+1-seed_pos;
-    seeds[4] = local_image_size[1]+1-seed_pos;
-    seeds[5] = local_image_size[0]+1-seed_pos;
-    seeds[7] = local_image_size[0]+1-seed_pos;
+    seeds[7] = local_image_size[0]-seed_pos;
+
+    int ranks[4] = {0,0,0,0};
+    ranks[0] = 0;
+    ranks[2] = size - 1;
+    
+    int lower_right;
+    int xy[2] = {0,dims[0] - 1};
+    MPI_Cart_rank(cart_comm, xy, &lower_right);
+    ranks[3] = lower_right;
+
+    int upper_left; //upper left in the bmp 
+    xy[0] = dims[1] - 1;
+    xy[1] = 0;
+    MPI_Cart_rank(cart_comm, xy, &upper_left);
+
+    ranks[1] = upper_left;
+    
     
     for(int i = 0; i < 4; i++){
+        if(rank != ranks[i]) continue;
         pixel_t seed;
         seed.x = seeds[i*2];
         seed.y = seeds[i*2+1];
