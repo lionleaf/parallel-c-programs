@@ -75,8 +75,8 @@ pixel_t pop(stack_t* stack){
 // More advanced similarity checks could have been used.
 int similar(unsigned char* im, pixel_t p, pixel_t q){
 
-    int a = im[p.x + p.y * (local_image_size[1] + 2)];
-    int b = im[q.x + q.y * (local_image_size[1] + 2)];
+    int a = im[p.x + p.y * (local_image_size[0] + 2)];
+    int b = im[q.x + q.y * (local_image_size[0] + 2)];
     int diff = abs(a-b);
     return diff < 2;
 
@@ -109,13 +109,13 @@ void create_types(){
 
     MPI_Type_vector(local_image_size[0],
                     1,
-                    image_size[0],
+                    image_size[1],
                     MPI_UNSIGNED_CHAR,
                     &haloless_col_t);
 
     MPI_Type_vector(local_image_size[0],
                     1,
-                    local_image_size[0] + 2,
+                    local_image_size[1] + 2,
                     MPI_UNSIGNED_CHAR,
                     &halo_col_t);
     
@@ -134,12 +134,13 @@ void distribute_image(){
                 int send_rank = 0;
                 int send_coords[2] = {y,x};
                 MPI_Cart_rank(cart_comm, send_coords, &send_rank);
+                printf("Sending to (%d,%d): %d\n" , x, y, send_rank);
 
                 //Send all the rows excluding halo
                 for(int i = 0; i < local_image_size[1]; i++){
                     char* start 
                         = &image[x*local_image_size[0]
-                                +y*local_image_size[1]*image_size[0]
+                                +y*local_image_size[0]*image_size[0]
                                 +i*image_size[0]];
 
                     MPI_Send(start, local_image_size[0]
@@ -172,6 +173,7 @@ void distribute_image_halo(){
                 int send_rank;
                 int send_coords[2] = {y,x};
                 MPI_Cart_rank(cart_comm, send_coords, &send_rank);
+                printf("Sending to (%d,%d): %d\n" , x, y, send_rank);
 
                 //Send north halo 
                 if(y > 0){
@@ -188,7 +190,7 @@ void distribute_image_halo(){
                 }
                 
                 //Send south halo 
-                if(y < dims[1] - 1){
+                if(y < dims[0] - 1){
                     char* start 
                         = &image[
                         x*local_image_size[0]                           //x grid colums
@@ -214,7 +216,7 @@ void distribute_image_halo(){
                 }
                 
                 //Send east halo 
-                if(x < dims[0] - 1){
+                if(x < dims[1] - 1){
                     char* col_start 
                         = &image[(x + 1) * local_image_size[0]  //x + 1 grid colums
                         + y * local_image_size[1]  * image_size[0]];  //y grid rows
@@ -390,7 +392,7 @@ void add_halo_to_stack(stack_t* stack){
     }
     for(int y = 0; y < local_image_size[1] + 2; y++){
         pixel_t pixel;
-        pixel.x = local_image_size[1] + 1;
+        pixel.x = local_image_size[0] + 1;
         pixel.y = y; 
 
         if(local_region[pixel.x + pixel.y * (local_image_size[0] + 2)]){
@@ -428,7 +430,8 @@ void gather_region(){
         }
         MPI_Barrier(cart_comm);
     }
-
+    
+    // Receive the data
     if(rank == 0){
         for(int recv_rank = 0; recv_rank < size; recv_rank++){
             int recv_coords[2] = {0,0};
@@ -436,13 +439,14 @@ void gather_region(){
             int x = recv_coords[1];
             int y = recv_coords[0];
 
+            printf("Receiving from (%d,%d) %d\n", x, y, recv_rank);
             MPI_Status status;
 
             for(int row = 0; row < local_image_size[1]; row++){
                 char* start =
-                    &region[y * local_image_size[1] * image_size[0] 
-                    + row * image_size[0]
-                    + x * local_image_size[0]];
+                    &region[y * local_image_size[0] * image_size[0] //move down to block
+                            + row * image_size[0]               //move rows down
+                            + x * local_image_size[0]];         //Move x blocks right
 
                 MPI_Recv(start, local_image_size[0],
                         MPI_UNSIGNED_CHAR, recv_rank, TAG, cart_comm, &status);
@@ -454,39 +458,17 @@ void gather_region(){
 }
 
 // Determine if all ranks are finished. You may have to add arguments.
-int finished(int local_finish){
-    int* finished = malloc(sizeof(int));
-    *finished = local_finish;
-    MPI_Send(finished, 1, MPI_INT, 0, TAG, cart_comm);
-    
-    int* bcast_buffer = malloc(sizeof(int));
-    int global_finish = 1;
-
-    if(rank == 0){
-        MPI_Status status;
-        int* buffer = malloc(sizeof(int));
-        for(int i = 0; i < size; i++){
-            MPI_Recv(buffer, 1, MPI_INT, i, TAG, cart_comm, &status);
-            global_finish *= *buffer;
-        }
-        free(buffer);
-        *bcast_buffer = global_finish;
-        printf("Finish %d \n", global_finish);
-    }
-
-    MPI_Bcast(bcast_buffer, 1, MPI_INT, 0, cart_comm);
-    free(finished);
-
-    global_finish = *bcast_buffer;
-    free(bcast_buffer);
-
-    return global_finish;
+int finished(int local_finished){
+    int global_finished;
+    MPI_Allreduce(&local_finished, &global_finished, 
+            1, MPI_INT, MPI_MIN, cart_comm);
+    return global_finished;
 }
 
 
 // Check if pixel is inside local image
 int inside(pixel_t p){
-    return (p.x > 0 && p.x <= local_image_size[1] && p.y > 0 && p.y <= local_image_size[0]);
+    return (p.x > 0 && p.x <= local_image_size[0] && p.y > 0 && p.y <= local_image_size[1]);
 }
 
 
@@ -508,7 +490,7 @@ void add_seeds(stack_t* stack){
     int ranks[4] = {0,0,0,0};
     ranks[0] = 0;
     ranks[2] = size - 1;
- /*   
+ 
     int lower_right;
     int xy[2] = {0,dims[1] - 1};
     MPI_Cart_rank(cart_comm, xy, &lower_right);
@@ -519,7 +501,7 @@ void add_seeds(stack_t* stack){
     xy[1] = 0;
     MPI_Cart_rank(cart_comm, xy, &upper_left);
     ranks[3] = upper_left;
-    */
+    
     
     for(int i = 0; i < 4; i++){
         if(rank != ranks[i]) continue;
@@ -543,7 +525,8 @@ void grow_region(){
         while(stack->size > 0){
             pixel_t pixel = pop(stack);
 
-            local_region[pixel.y * (local_image_size[1] + 2) + pixel.x] = 1;
+
+            local_region[pixel.y * (local_image_size[0] + 2) + pixel.x] = 1;
 
 
             int dx[4] = {0,0,1,-1}, dy[4] = {1,-1,0,0};
@@ -557,18 +540,17 @@ void grow_region(){
                 }
 
 
-                if(local_region[candidate.y * (local_image_size[1] + 2) + candidate.x]){
+                if(local_region[candidate.y * (local_image_size[0] + 2) + candidate.x]){
                     continue;
                 }
 
                 if(similar(local_image, pixel, candidate)){
-                    local_region[candidate.y * (local_image_size[1] + 2) + candidate.x] = 1;
+                    local_region[candidate.y * (local_image_size[0] + 2) + candidate.x] = 1;
                     push(stack,candidate);
                     local_finish = 0;
                 }
             }
         }
-
         exchange(stack);
         add_halo_to_stack(stack);
 
@@ -592,41 +574,6 @@ void init_mpi(int argc, char** argv){
     
     MPI_Cart_shift( cart_comm, 0, 1, &north, &south );
     MPI_Cart_shift( cart_comm, 1, 1, &west, &east );
-}
-
-//TODO: delete
-void generate_debug_image(){
-    image_size[0] = 8;
-    image_size[1] = 8;
-
-    local_image_size[0] = image_size[0]/dims[0];
-    local_image_size[1] = image_size[1]/dims[1];
-
-    int lsize = local_image_size[0]*local_image_size[1];
-    int lsize_border = (local_image_size[0] + 2)*(local_image_size[1] + 2);
-    local_image = (unsigned char*)calloc(sizeof(unsigned char),lsize_border);
-    local_region = (unsigned char*)calloc(sizeof(unsigned char),lsize_border);
-
-
-    srand(1337);
-    if(rank == 0){
-        image = (unsigned char*)calloc(sizeof(unsigned char) , image_size[0]*image_size[1]);
-        for (int i=0; i<image_size[1]; i++) {
-            for (int j=0; j<image_size[0]; j++)
-                //image[j +  i * image_size[0]] = rand()%8;
-                image[j +  i * image_size[0]] = j;
-        }    
-
-        printf("Image! \n", rank);
-        for (int i=0; i<image_size[0]; i++) {
-            putchar('|');
-            for (int j=0; j<image_size[1]; j++) {
-                //putchar(image[j +  i * image_size[0]]);
-                printf("%d ", image[j +  i * image_size[0]]);
-            }
-            printf("|\n");
-        }
-    }
 }
 
 void load_and_allocate_images(int argc, char** argv){
@@ -661,76 +608,23 @@ void write_image(){
     }
 }
 
-void print_local_image(){
-    MPI_Barrier(MPI_COMM_WORLD);
-    for (int p=0; p<size; p++) {
-        if (rank == p) {
-            printf("Local process on rank %d is:\n", rank);
-            for (int i=0; i<local_image_size[0]+2; i++) {
-                putchar('|');
-                for (int j=0; j<local_image_size[1]+2; j++) {
-                    printf("%d ",local_image[j +  i * (local_image_size[0]+2)]);
-                }
-                printf("|\n");
-            }
-        }
-        MPI_Barrier(MPI_COMM_WORLD);
-    }
-}
-
-void print_subregions(){
-
-    for (int p=0; p<size; p++) {
-        if (rank == p) {
-            printf("Region on rank %d is:\n", rank);
-            for (int i=0; i<local_image_size[0]+2; i++) {
-                putchar('|');
-                for (int j=0; j<local_image_size[1]+2; j++) {
-                    printf("%d ",local_region[j +  i * (local_image_size[0]+2)]);
-                }
-                printf("|\n");
-            }
-        }
-        MPI_Barrier(MPI_COMM_WORLD);
-    }
-}
-
-void print_region(){
-
-    if (rank == 0) {
-        printf("Final region: \n");
-        for (int i=0; i < image_size[0]; i++) {
-            putchar('|');
-            for (int j=0; j < image_size[1]; j++) {
-                printf("%d ",region[j +  i * (image_size[0])]);
-            }
-            printf("|\n");
-        }
-    }
-}
-
 int main(int argc, char** argv){
     
     init_mpi(argc, argv);
 
     load_and_allocate_images(argc, argv);
-    //generate_debug_image();
     
     create_types();
     
+
     distribute_image();
-    //print_local_image();
 
     distribute_image_halo();
-
 
     grow_region();
     
     gather_region();
     
-    //print_subregions();
-    //print_region();
-
     MPI_Finalize();
     
     write_image();
