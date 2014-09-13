@@ -82,31 +82,8 @@ int similar(unsigned char* im, pixel_t p, pixel_t q){
 
 }
 
-//TODO: Remove
-int malloc2dchar(char ***array, int n, int m) {
-
-    /* allocate the n*m contiguous items */
-    char *p = (char *)malloc(n*m*sizeof(char));
-    if (!p) return -1;
-
-    /* allocate the row pointers into the memory */
-    (*array) = (char **)malloc(n*sizeof(char*));
-    if (!(*array)) {
-        free(p);
-        return -1;
-    }
-
-    /* set up the pointers into the contiguous memory */
-    for (int i=0; i<n; i++)
-        (*array)[i] = &(p[i*m]);
-
-    return 0;
-}
-
 // Create and commit MPI datatypes
 void create_types(){
-    int starts[2]   = {0,0}; 
-
     MPI_Type_vector(local_image_size[0],
                     1,
                     image_size[1],
@@ -134,7 +111,6 @@ void distribute_image(){
                 int send_rank = 0;
                 int send_coords[2] = {y,x};
                 MPI_Cart_rank(cart_comm, send_coords, &send_rank);
-                printf("Sending to (%d,%d): %d\n" , x, y, send_rank);
 
                 //Send all the rows excluding halo
                 for(int i = 0; i < local_image_size[1]; i++){
@@ -173,7 +149,6 @@ void distribute_image_halo(){
                 int send_rank;
                 int send_coords[2] = {y,x};
                 MPI_Cart_rank(cart_comm, send_coords, &send_rank);
-                printf("Sending to (%d,%d): %d\n" , x, y, send_rank);
 
                 //Send north halo 
                 if(y > 0){
@@ -439,7 +414,6 @@ void gather_region(){
             int x = recv_coords[1];
             int y = recv_coords[0];
 
-            printf("Receiving from (%d,%d) %d\n", x, y, recv_rank);
             MPI_Status status;
 
             for(int row = 0; row < local_image_size[1]; row++){
@@ -554,9 +528,6 @@ void grow_region(){
         exchange(stack);
         add_halo_to_stack(stack);
 
-        if(rank == 0){
-            printf("loop \n");
-        }
         MPI_Barrier(cart_comm);
     }
 }
