@@ -107,6 +107,14 @@ int malloc2dchar(char ***array, int n, int m) {
 void create_types(){
     int starts[2]   = {0,0}; 
 
+    MPI_Datatype temp_type;
+    MPI_Type_create_subarray(2, image_size, local_image_size, starts
+                            ,MPI_ORDER_C, MPI_UNSIGNED_CHAR, &temp_type);
+
+    MPI_Type_create_resized(temp_type, 0, local_image_size[0]*sizeof(unsigned char), &region_t);
+
+    MPI_Type_commit(&region_t);
+
     MPI_Type_vector(local_image_size[0],
                     1,
                     image_size[1],
@@ -127,43 +135,29 @@ void create_types(){
 
 // Send image from rank 0 to all ranks, from image to local_image
 void distribute_image(){
-    
-    if(rank == 0){
-        for(int x = 0; x < dims[1]; x++){
-            for(int y = 0; y < dims[0]; y++){
-                int send_rank = 0;
-                int send_coords[2] = {y,x};
-                MPI_Cart_rank(cart_comm, send_coords, &send_rank);
-                printf("Sending to (%d,%d): %d\n" , x, y, send_rank);
+    int sendcounts[size];
+    int displs[size];
 
-                //Send all the rows excluding halo
-                for(int i = 0; i < local_image_size[1]; i++){
-                    char* start 
-                        = &image[x*local_image_size[0]
-                                +y*local_image_size[0]*image_size[0]
-                                +i*image_size[0]];
-
-                    MPI_Send(start, local_image_size[0]
-                            ,MPI_UNSIGNED_CHAR, send_rank
-                            ,TAG, cart_comm);
-                }
+    if (rank == 0) {
+        printf("dims 0: %d, 1: %d \n",dims[0],dims[1]);
+        for (int i=0; i<size; i++) sendcounts[i] = 1;
+        int disp = 0;
+        printf("disp = [");
+        for (int i=0; i<dims[1]; i++) {
+            for (int j=0; j<dims[0]; j++) {
+                displs[i*dims[1]+j] = 0; //disp;
+                printf(", '%d'",disp);
+                disp += 1;
             }
+            disp += (local_image_size[1]-1)*dims[0]; //FIXME probably wrong
         }
-    }
+        printf("]\n");
+    } 
+    
 
-    MPI_Status status;
-    //Receive all the rows excluding halo
-    for(int i = 0; i < local_image_size[1]; i++){
-        char* start = 
-            &local_image[
-            (i+1)*(local_image_size[0] + 2)
-            +1];
-
-        MPI_Recv(start,
-                local_image_size[0], MPI_UNSIGNED_CHAR, 0,
-                TAG, cart_comm, &status);
-    }
-
+    MPI_Scatterv(image, sendcounts, displs, region_t, local_image,
+                 local_image_size[0]*local_image_size[1], MPI_UNSIGNED_CHAR,
+                  0, MPI_COMM_WORLD); 
 }
 
 void distribute_image_halo(){
@@ -597,6 +591,9 @@ void load_and_allocate_images(int argc, char** argv){
     local_region = (unsigned char*)calloc(sizeof(unsigned char),lsize_border);
 }
 
+void pad_image(){
+    padded_image =(unsigned char*)calloc(sizeof(unsigned char),image_size[0]*image_size[1]); 
+}
 
 void write_image(){
     if(rank==0){
