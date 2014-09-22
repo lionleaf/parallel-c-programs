@@ -14,17 +14,7 @@ typedef struct{
 } csr_matrix_t;
 
 typedef struct{
-    float* a;
-    float* c_left;
-    float* c_right;
-    float* e_left;
-    float* e_right;
-    int n;
-    int a_width;
-    int b_width;
-    int c_width;
-    int d_width;
-    int e_width;
+    float* values;
 } s_matrix_t;
 
 int diag_count(int dim, int n){
@@ -143,6 +133,81 @@ csr_matrix_t* create_csr_matrix(int n_rows, int n_cols, int a, int b, int c, int
     return matrix;
 }
 
+
+
+void multiply_csr(s_matrix_t* matrix, float* v, float* r, int n, int a, int b, int c, int d, int e){
+
+    float* m = matrix->values;
+
+    int ah = a/2;
+
+    /*int size = diag_count(n,ah);
+    size += (diag_count(n,ah+b+c) - diag_count(n_rows,ah+b));
+    size += (diag_count(n,ah+b+c+d+e) - diag_count(n,ah+b+c+d));
+    size = size*2 + n_rows;*/
+
+    int limits[10];
+    limits[5] = ah;
+    limits[6] = ah + b;
+    limits[7] = ah + b + c;
+    limits[8] = ah + b + c + d;
+    limits[9] = ah + b + c + d + e;
+    limits[0] = -limits[9];
+    limits[1] = -limits[8];
+    limits[2] = -limits[7];
+    limits[3] = -limits[6];
+    limits[4] = -limits[5];
+
+    limits[5]++;
+    limits[6]++;
+    limits[7]++;
+    limits[8]++;
+    limits[9]++;
+
+    int counter = 0;
+    for(int i = 0; i < n; i++){
+
+        float result_acc = 0;
+        //int row_width = index;
+        int lower = fmax(0, limits[0]);
+        int upper = fmax(0, limits[1]);
+
+        for(int j = lower; j < upper; j++)
+            result_acc += v[j] * m[counter++];
+
+        lower = fmax(0, limits[2]);
+        upper = fmax(0, limits[3]);
+
+        for(int j = lower; j < upper; j++)
+            result_acc += v[j] * m[counter++];
+
+        lower = fmax(0,limits[4]);
+        upper = fmin(limits[5], n);
+
+        for(int j = lower; j < upper; j++)
+            result_acc += v[j] * m[counter++];
+
+        lower = fmin(n, limits[6]);
+        upper = fmin(n, limits[7]);
+        for(int j = lower; j < upper; j++)
+            result_acc += v[j] * m[counter++];
+
+        lower = fmin(n, limits[8]);
+        upper = fmin(n, limits[9]);
+
+        for(int j = lower; j < upper; j++)
+            result_acc += v[j] * m[counter++];
+
+
+        r[i] = result_acc;
+
+        for(int j = 0; j < 10; j++)
+            limits[j]++;
+
+
+    }
+}
+
 float* create_vector(int n){
     float* v = (float*)malloc(sizeof(float)*n);
     for(int i = 0; i < n; i++){
@@ -221,18 +286,13 @@ s_matrix_t* create_s_matrix(int dim, int a, int b, int c, int d, int e){
     return NULL;
 }
 
-/*s_matrix_t* convert_to_s_matrix(csr_matrix_t* csr){
+s_matrix_t* convert_to_s_matrix(csr_matrix_t* csr){
     s_matrix_t* matrix = (s_matrix_t*)malloc(sizeof(s_matrix_t));
 
-    for(int i = 0; i < csr->n_row_ptr-1; i++){
-        
-        for(int j = m->row_ptr[i]; j < m->row_ptr[i+1]; j++){
-            r[i] += v[m->col_ind[j]] * m->values[j];
-        }
-    }
+    matrix->values = csr->values;
 
     return matrix;
-}*/
+}
 
 void multiply(s_matrix_t* m, float* v, float* r){
 }
@@ -268,11 +328,11 @@ int main(int argc, char** argv){
     
     //s_matrix_t* s = create_csr_matrix(dim, dim, a, b, c, d, e);
     //s_matrix_t* s = create_s_matrix(dim, a, b, c, d, e);
-    //s_matrix_t* s = convert_to_s_matrix(m);
+    s_matrix_t* s = convert_to_s_matrix(m);
     
     gettimeofday(&start, NULL);
     //multiply(m,v,r2);
-    multiply_naive_opt(m,v,r2);
+    multiply_csr(s, v, r2, dim, a, b, c, d, e);
     gettimeofday(&end, NULL);
     
     print_time(start, end);
