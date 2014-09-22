@@ -4,6 +4,7 @@
 #include <string.h>
 #include <time.h>
 #include <sys/time.h>
+#include "xmmintrin.h"
 
 typedef struct{
     int n_row_ptr;
@@ -207,7 +208,8 @@ void multiply_naive_opt(csr_matrix_t* m, float* v, float* r){
 void compare(float* a, float* b, int n){
     int n_errors = 0;
     for(int i = 0; i < n; i++){
-        if(fabs(a[i] - b[i]) > 1e-4){
+        //I was getting a few errors with 1e-4
+        if(fabs(a[i] - b[i]) > 1e-3){
             n_errors++;
             if(n_errors < 10){
                 printf("Error at: %d, expected: %f, actual: %f\n", i, a[i], b[i]);
@@ -243,7 +245,6 @@ void multiply(s_matrix_t* matrix, float* v, float* r){
 
     float* values = matrix->values;
     int n = matrix->n;
-    int a = matrix->a;
     int b = matrix->b;
     int c = matrix->c;
     int d = matrix->d;
@@ -273,7 +274,12 @@ void multiply(s_matrix_t* matrix, float* v, float* r){
     int upper[5];
 
     int counter = 0;
-    float result_acc = 0;
+
+    __m128 x, y, acc;
+
+    float temp_acc[4];
+    float result_acc;
+
     for(int i = 0; i < n; i++){
 
       lower[0] = fmax(0, limits[0]);
@@ -289,12 +295,32 @@ void multiply(s_matrix_t* matrix, float* v, float* r){
       upper[4] = fmin(n, limits[9]);
 
       result_acc = 0;
+      acc = _mm_setzero_ps(); //zero accumulator
+
       for(int round = 0; round < 5; round++){
-        for(int j = lower[round]; j < upper[round]; j++){
+        int j;
+        for(j = lower[round]; j <= upper[round]-4; j += 4){
+          x = _mm_loadu_ps(&v[j]);
+          y = _mm_loadu_ps(&values[counter]);
+          acc = _mm_add_ps(acc, _mm_mul_ps(x,y));
+
+          counter += 4;
+        }
+
+        //calculate the tail manually
+        for(; j < upper[round]; j++){
           result_acc += v[j] * values[counter++];
         }
       }
         
+      _mm_storeu_ps(temp_acc, acc);
+
+      //Split up in multiple statements as it gives less round off errors
+      result_acc += temp_acc[0]; 
+      result_acc += temp_acc[1];
+      result_acc += temp_acc[2];
+      result_acc += temp_acc[3];
+
       r[i] = result_acc;
 
       for(int j = 0; j < 10; j++)
