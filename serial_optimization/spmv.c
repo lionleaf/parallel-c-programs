@@ -4,6 +4,7 @@
 #include <string.h>
 #include <time.h>
 #include <sys/time.h>
+#include <malloc.h>
 #include "xmmintrin.h"
 
 typedef struct{
@@ -197,23 +198,6 @@ s_matrix_t* create_s_matrix(int dim, int a, int b, int c, int d, int e){
 s_matrix_t* convert_to_s_matrix(csr_matrix_t* csr, int n, int a, int b, int c, int d, int e){
     s_matrix_t* matrix = (s_matrix_t*)malloc(sizeof(s_matrix_t));
 
-/*
-    int ah = a/2;
-    int size = diag_count(n_rows,ah);
-    size += (diag_count(n_rows,ah+b+c) - diag_count(n_rows,ah+b));
-    size += (diag_count(n_rows,ah+b+c+d+e) - diag_count(n_rows,ah+b+c+d));
-    size = size*2 + n_rows;
-
-    int memsize = sizeof(float)*size;
-    if(memsize % 64 != 0){
-        //aligned_alloc doesn't allow a size that is not a multiple of alignment
-        memsize += 64 - memsize % 64;
-    }
-    matrix->values = (float*) aligned_alloc(64, memsize);
-    
-    memcpy(matrix->values, csr->values, sizeof(float)*size);
-
-*/
     matrix->values = csr->values;
     matrix->n = n;
     matrix->a = a;
@@ -256,7 +240,7 @@ void multiply(s_matrix_t* matrix, float* v, float* r){
     limits[8]++;
     limits[9]++;
 
-    int lower[5];
+    int lower[6];
     int upper[5];
 
     int counter = 0;
@@ -273,6 +257,7 @@ void multiply(s_matrix_t* matrix, float* v, float* r){
       lower[2] = fmax(0, limits[4]);
       lower[3] = fmin(n, limits[6]);
       lower[4] = fmin(n, limits[8]);
+      lower[5] = 0; //Overflow protection to avoid branch when prefetching
 
       upper[0] = fmax(0, limits[1]);
       upper[1] = fmax(0, limits[3]);
@@ -286,6 +271,11 @@ void multiply(s_matrix_t* matrix, float* v, float* r){
       for(int round = 0; round < 5; round++){
         int j;
         for(j = lower[round]; j <= upper[round]-20; j += 20){
+
+          //Start fetching first cache line for next iteration
+          _mm_prefetch(&v[lower[round+1]+j], _MM_HINT_T0);
+          _mm_prefetch(&values[counter+20], _MM_HINT_T0);
+
 
           //Partial loop unrolling
           //Amount of unrolling found experimentally
@@ -301,6 +291,7 @@ void multiply(s_matrix_t* matrix, float* v, float* r){
           y = _mm_loadu_ps(&values[counter+8]);
           acc = _mm_add_ps(acc, _mm_mul_ps(x,y));
 
+
           x = _mm_loadu_ps(&v[j+12]);
           y = _mm_loadu_ps(&values[counter+12]);
           acc = _mm_add_ps(acc, _mm_mul_ps(x,y));
@@ -308,6 +299,10 @@ void multiply(s_matrix_t* matrix, float* v, float* r){
           x = _mm_loadu_ps(&v[j+16]);
           y = _mm_loadu_ps(&values[counter+16]);
           acc = _mm_add_ps(acc, _mm_mul_ps(x,y));
+
+          //Start fetching second cache line for next iteration
+          _mm_prefetch(&values[counter+36], _MM_HINT_T0);
+          _mm_prefetch(&v[lower[round+1]+j+16], _MM_HINT_T0);
 
           counter += 20;
         }
@@ -361,11 +356,8 @@ int main(int argc, char** argv){
     print_time(start, end);
     
     s_matrix_t* s = convert_to_s_matrix(m, dim, a, b, c, d, e);
-    printf("%d \n", (s->values));
     
     gettimeofday(&start, NULL);
-    //multiply(m,v,r2);
-  //  multiply_naive_opt(m,v,r2);
     multiply(s, v, r2);
     gettimeofday(&end, NULL);
     
