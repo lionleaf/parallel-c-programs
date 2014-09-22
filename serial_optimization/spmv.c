@@ -14,6 +14,17 @@ typedef struct{
 } csr_matrix_t;
 
 typedef struct{
+    float* a;
+    float* c_left;
+    float* c_right;
+    float* e_left;
+    float* e_right;
+    int n;
+    int a_width;
+    int b_width;
+    int c_width;
+    int d_width;
+    int e_width;
 } s_matrix_t;
 
 int diag_count(int dim, int n){
@@ -163,6 +174,35 @@ void multiply_naive(csr_matrix_t* m, float* v, float* r){
     }
 }
 
+void multiply_naive_opt_old(csr_matrix_t* m, float* v, float* r){
+    for(int i = 0; i < m->n_row_ptr-1; i++){
+        float r_val = 0;
+        for(int j = m->row_ptr[i]; j < m->row_ptr[i+1]; j++){
+           r_val  += v[m->col_ind[j]] * m->values[j];
+        }
+        r[i] = r_val;
+    }
+}
+
+void multiply_naive_opt(csr_matrix_t* m, float* v, float* r){
+    //Fetch all relevant fields so we don't have indirect access in the loop
+    //This shaved consistently between 0.05 and 0.1 ms off the run with the example parameters
+    int n_row_ptr = m->n_row_ptr;
+    int* row_ptr = m->row_ptr;
+    int* col_ind = m->col_ind;
+    float* values = m->values;
+
+    for(int i = 0; i < n_row_ptr-1; i++){
+        float r_val = 0;
+        int this_row = row_ptr[i];
+        int next_row = row_ptr[i+1];
+        for(int j = this_row; j < next_row; j++){
+           r_val  += v[col_ind[j]] * values[j];
+        }
+        r[i] = r_val;
+    }
+}
+
 void compare(float* a, float* b, int n){
     int n_errors = 0;
     for(int i = 0; i < n; i++){
@@ -181,9 +221,18 @@ s_matrix_t* create_s_matrix(int dim, int a, int b, int c, int d, int e){
     return NULL;
 }
 
-s_matrix_t* convert_to_s_matrix(csr_matrix_t* csr){
-    return NULL;
-}
+/*s_matrix_t* convert_to_s_matrix(csr_matrix_t* csr){
+    s_matrix_t* matrix = (s_matrix_t*)malloc(sizeof(s_matrix_t));
+
+    for(int i = 0; i < csr->n_row_ptr-1; i++){
+        
+        for(int j = m->row_ptr[i]; j < m->row_ptr[i+1]; j++){
+            r[i] += v[m->col_ind[j]] * m->values[j];
+        }
+    }
+
+    return matrix;
+}*/
 
 void multiply(s_matrix_t* m, float* v, float* r){
 }
@@ -211,16 +260,19 @@ int main(int argc, char** argv){
     struct timeval start, end;
 
     gettimeofday(&start, NULL);
+    //multiply_naive_opt_old(m,v,r1);
     multiply_naive(m,v,r1);
     gettimeofday(&end, NULL);
     
     print_time(start, end);
     
-    s_matrix_t* s = create_s_matrix(dim, a, b, c, d, e);
+    //s_matrix_t* s = create_csr_matrix(dim, dim, a, b, c, d, e);
+    //s_matrix_t* s = create_s_matrix(dim, a, b, c, d, e);
     //s_matrix_t* s = convert_to_s_matrix(m);
     
     gettimeofday(&start, NULL);
-    multiply(s,v,r2);
+    //multiply(m,v,r2);
+    multiply_naive_opt(m,v,r2);
     gettimeofday(&end, NULL);
     
     print_time(start, end);
