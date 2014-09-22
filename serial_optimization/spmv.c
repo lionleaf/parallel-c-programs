@@ -175,36 +175,6 @@ void multiply_naive(csr_matrix_t* m, float* v, float* r){
     }
 }
 
-void multiply_naive_opt_old(csr_matrix_t* m, float* v, float* r){
-    for(int i = 0; i < m->n_row_ptr-1; i++){
-        float r_val = 0;
-        for(int j = m->row_ptr[i]; j < m->row_ptr[i+1]; j++){
-           r_val  += v[m->col_ind[j]] * m->values[j];
-        }
-        r[i] = r_val;
-    }
-}
-
-void multiply_naive_opt(csr_matrix_t* m, float* v, float* r){
-    //Fetch all relevant fields so we don't have indirect access in the loop
-    //This shaved consistently between 0.05 and 0.1 ms off the run with the example parameters
-    int n_row_ptr = m->n_row_ptr;
-    int* row_ptr = m->row_ptr;
-    int* col_ind = m->col_ind;
-    float* values = m->values;
-
-    float result_buffer = 0;
-    for(int i = 0; i < n_row_ptr-1; i++){
-        result_buffer = 0;
-        int this_row = row_ptr[i];
-        int next_row = row_ptr[i+1];
-        for(int j = this_row; j < next_row; j++){
-           result_buffer  += v[col_ind[j]] * values[j];
-        }
-        r[i] = result_buffer;
-    }
-}
-
 void compare(float* a, float* b, int n){
     int n_errors = 0;
     for(int i = 0; i < n; i++){
@@ -227,8 +197,24 @@ s_matrix_t* create_s_matrix(int dim, int a, int b, int c, int d, int e){
 s_matrix_t* convert_to_s_matrix(csr_matrix_t* csr, int n, int a, int b, int c, int d, int e){
     s_matrix_t* matrix = (s_matrix_t*)malloc(sizeof(s_matrix_t));
 
-    matrix->values = csr->values;
+/*
+    int ah = a/2;
+    int size = diag_count(n_rows,ah);
+    size += (diag_count(n_rows,ah+b+c) - diag_count(n_rows,ah+b));
+    size += (diag_count(n_rows,ah+b+c+d+e) - diag_count(n_rows,ah+b+c+d));
+    size = size*2 + n_rows;
 
+    int memsize = sizeof(float)*size;
+    if(memsize % 64 != 0){
+        //aligned_alloc doesn't allow a size that is not a multiple of alignment
+        memsize += 64 - memsize % 64;
+    }
+    matrix->values = (float*) aligned_alloc(64, memsize);
+    
+    memcpy(matrix->values, csr->values, sizeof(float)*size);
+
+*/
+    matrix->values = csr->values;
     matrix->n = n;
     matrix->a = a;
     matrix->b = b;
@@ -299,12 +285,31 @@ void multiply(s_matrix_t* matrix, float* v, float* r){
 
       for(int round = 0; round < 5; round++){
         int j;
-        for(j = lower[round]; j <= upper[round]-4; j += 4){
+        for(j = lower[round]; j <= upper[round]-20; j += 20){
+
+          //Partial loop unrolling
+          //Amount of unrolling found experimentally
           x = _mm_loadu_ps(&v[j]);
           y = _mm_loadu_ps(&values[counter]);
           acc = _mm_add_ps(acc, _mm_mul_ps(x,y));
 
-          counter += 4;
+          x = _mm_loadu_ps(&v[j+4]);
+          y = _mm_loadu_ps(&values[counter+4]);
+          acc = _mm_add_ps(acc, _mm_mul_ps(x,y));
+
+          x = _mm_loadu_ps(&v[j+8]);
+          y = _mm_loadu_ps(&values[counter+8]);
+          acc = _mm_add_ps(acc, _mm_mul_ps(x,y));
+
+          x = _mm_loadu_ps(&v[j+12]);
+          y = _mm_loadu_ps(&values[counter+12]);
+          acc = _mm_add_ps(acc, _mm_mul_ps(x,y));
+
+          x = _mm_loadu_ps(&v[j+16]);
+          y = _mm_loadu_ps(&values[counter+16]);
+          acc = _mm_add_ps(acc, _mm_mul_ps(x,y));
+
+          counter += 20;
         }
 
         //calculate the tail manually
@@ -327,7 +332,6 @@ void multiply(s_matrix_t* matrix, float* v, float* r){
         limits[j]++;
     }
 }
-
 
 int main(int argc, char** argv){
     
@@ -357,6 +361,7 @@ int main(int argc, char** argv){
     print_time(start, end);
     
     s_matrix_t* s = convert_to_s_matrix(m, dim, a, b, c, d, e);
+    printf("%d \n", (s->values));
     
     gettimeofday(&start, NULL);
     //multiply(m,v,r2);
