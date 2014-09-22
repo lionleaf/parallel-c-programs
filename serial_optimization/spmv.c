@@ -164,56 +164,52 @@ void multiply_csr(s_matrix_t* matrix, float* v, float* r, int n, int a, int b, i
     limits[8]++;
     limits[9]++;
 
+
+    int lower[5];
+    int upper[5];
+
+
+
+
+
     int counter = 0;
+    float result_acc = 0;
     for(int i = 0; i < n; i++){
+      result_acc = 0;
 
-        float result_acc = 0;
-        //int row_width = index;
-        int lower = fmax(0, limits[0]);
-        int upper = fmax(0, limits[1]);
+      lower[0] = fmax(0, limits[0]);
+      lower[1] = fmax(0, limits[2]);
+      lower[2] = fmax(0,limits[4]);
+      lower[3] = fmin(n, limits[6]);
+      lower[4] = fmin(n, limits[8]);
 
-        for(int j = lower; j < upper; j++)
-            result_acc += v[j] * m[counter++];
+      upper[0] = fmax(0, limits[1]);
+      upper[1] = fmax(0, limits[3]);
+      upper[2] = fmin(limits[5], n);
+      upper[3] = fmin(n, limits[7]);
+      upper[4] = fmin(n, limits[9]);
 
-        lower = fmax(0, limits[2]);
-        upper = fmax(0, limits[3]);
+      for(int round = 0; round < 5; round++){
+        for(int j = lower[round]; j < upper[round]; j++){
+          result_acc += v[j] * m[counter++];
+        }
+      }
+        
+      r[i] = result_acc;
 
-        for(int j = lower; j < upper; j++)
-            result_acc += v[j] * m[counter++];
-
-        lower = fmax(0,limits[4]);
-        upper = fmin(limits[5], n);
-
-        for(int j = lower; j < upper; j++)
-            result_acc += v[j] * m[counter++];
-
-        lower = fmin(n, limits[6]);
-        upper = fmin(n, limits[7]);
-        for(int j = lower; j < upper; j++)
-            result_acc += v[j] * m[counter++];
-
-        lower = fmin(n, limits[8]);
-        upper = fmin(n, limits[9]);
-
-        for(int j = lower; j < upper; j++)
-            result_acc += v[j] * m[counter++];
-
-
-        r[i] = result_acc;
-
-        for(int j = 0; j < 10; j++)
-            limits[j]++;
+      for(int j = 0; j < 10; j++)
+        limits[j]++;
 
 
     }
 }
 
 float* create_vector(int n){
-    float* v = (float*)malloc(sizeof(float)*n);
-    for(int i = 0; i < n; i++){
-        v[i] = (float)rand()/RAND_MAX;
-    }
-    return v;
+  float* v = (float*)malloc(sizeof(float)*n);
+  for(int i = 0; i < n; i++){
+    v[i] = (float)rand()/RAND_MAX;
+  }
+  return v;
 }
 
 void print_vector(float* v, int n, int orientation){
@@ -257,14 +253,15 @@ void multiply_naive_opt(csr_matrix_t* m, float* v, float* r){
     int* col_ind = m->col_ind;
     float* values = m->values;
 
+    float result_buffer = 0;
     for(int i = 0; i < n_row_ptr-1; i++){
-        float r_val = 0;
+        result_buffer = 0;
         int this_row = row_ptr[i];
         int next_row = row_ptr[i+1];
         for(int j = this_row; j < next_row; j++){
-           r_val  += v[col_ind[j]] * values[j];
+           result_buffer  += v[col_ind[j]] * values[j];
         }
-        r[i] = r_val;
+        r[i] = result_buffer;
     }
 }
 
@@ -332,6 +329,7 @@ int main(int argc, char** argv){
     
     gettimeofday(&start, NULL);
     //multiply(m,v,r2);
+  //  multiply_naive_opt(m,v,r2);
     multiply_csr(s, v, r2, dim, a, b, c, d, e);
     gettimeofday(&end, NULL);
     
