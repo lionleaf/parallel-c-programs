@@ -49,12 +49,12 @@ void* run_thread(void* thread_id){
     }
     pthread_mutex_unlock(&mutex);
 
-    if(t_id == 0){
-    for(int i = t_id; i < color_depth; i += 1){
+    barrier();
+
+    for(int i = t_id; i < color_depth; i += n_threads){
         for(int j = 0; j < i+1; j++){
             transfer_function[i] += color_depth * ((float)histogram[j])/(image_size);
         }
-    }
     }
     
     barrier();
