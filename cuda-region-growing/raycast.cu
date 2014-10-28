@@ -116,6 +116,8 @@ unsigned char func(int x, int y, int z){
     z1 = 400;
     dist = sqrt((x-x1)*(x-x1) + (y-y1)*(y-y1) + (z-z1)*(z-z1));
 
+
+
     if(dist < 50){
         value = 50;
     }
@@ -430,7 +432,7 @@ unsigned char* raycast_gpu(unsigned char* data, unsigned char* region){
 
 
 unsigned char* raycast_gpu_texture(unsigned char* data, unsigned char* region){
-    int data_size = sizeof(unsigned char) * IMAGE_DIM * IMAGE_DIM * IMAGE_DIM;
+    //int data_size = sizeof(unsigned char) * IMAGE_DIM * IMAGE_DIM * IMAGE_DIM;
 
     data_texture.filterMode = cudaFilterModeLinear;
     //region_texture.filterMode = cudaFilterModeLinear;
@@ -473,7 +475,6 @@ unsigned char* raycast_gpu_texture(unsigned char* data, unsigned char* region){
 
     raycast_kernel_texture<<<IMAGE_DIM, IMAGE_DIM>>>(device_image);  
 
-    printf("%s\n", cudaGetErrorString(cudaGetLastError()));
 
     unsigned char* host_image = (unsigned char*)malloc(sizeof(unsigned char)*IMAGE_DIM*IMAGE_DIM);
     cudaMemcpy(host_image, device_image, image_size, cudaMemcpyDeviceToHost);
@@ -482,19 +483,111 @@ unsigned char* raycast_gpu_texture(unsigned char* data, unsigned char* region){
 }
 
 
-__global__ void region_grow_kernel(unsigned char* data, unsigned char* region, int* finished){
+__global__ void region_grow_kernel(unsigned char* data, unsigned char* region, int* unfinished){
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int z = blockIdx.z * blockDim.z + threadIdx.z;
+
+    int index = z * DATA_DIM * DATA_DIM + y * DATA_DIM + x;
+
+    if(region[index] == 2){
+        //Race conditions should not matter, as we only write 1s, and if one of them gets through it's enough
+        *unfinished = 1; 
+        region[index] = 1;
+
+        int dx[6] = {-1,1,0,0,0,0};
+        int dy[6] = {0,0,-1,1,0,0};
+        int dz[6] = {0,0,0,0,-1,1};
+        
+        int3 pixel;
+        pixel.x = x;
+        pixel.y = y;
+        pixel.z = z;
+
+
+        for(int n = 0; n < 6; n++){
+            int3 candidate;
+            candidate.x = x + dx[n];
+            candidate.y = y + dy[n];
+            candidate.z = z + dz[n];
+
+            if(!inside(candidate)){
+                continue;
+            }
+
+            if(region[candidate.z * DATA_DIM*DATA_DIM + candidate.y*DATA_DIM + candidate.x]){
+                continue;
+            }
+
+            if(similar(data, pixel, candidate)){
+                region[candidate.z * DATA_DIM*DATA_DIM + candidate.y*DATA_DIM + candidate.x] = 2;
+            }
+        }
+
+    }
 
 }
 
 
-__global__ void region_grow_kernel_shared(unsigned char* data, unsigned char* region, int* finished){
+__global__ void region_grow_kernel_shared(unsigned char* data, unsigned char* region, int* unfinished){
 
 }
 
 
-unsigned char* grow_region_gpu(unsigned char* data){
-    unsigned char* region = (unsigned char*)calloc(sizeof(unsigned char), DATA_DIM*DATA_DIM*DATA_DIM);
-    return region;
+unsigned char* grow_region_gpu(unsigned char* host_data){
+    int region_size = sizeof(unsigned char) * DATA_DIM*DATA_DIM*DATA_DIM;
+    int data_size = region_size;
+
+    unsigned char* host_region = (unsigned char*)calloc(sizeof(unsigned char), DATA_DIM*DATA_DIM*DATA_DIM);
+    
+    int*            host_unfinished = (int*) calloc(sizeof(int), 1);
+
+    unsigned char*  device_region;
+    unsigned char*  device_data;
+    int*            device_unfinished;
+
+    cudaMalloc(&device_region, region_size);
+    cudaMalloc(&device_data, data_size);
+    cudaMalloc(&device_unfinished, 1);
+
+    //plant seed
+    int3 seed = {.x=50, .y=300, .z=300};
+    host_region[seed.z *DATA_DIM*DATA_DIM + seed.y*DATA_DIM + seed.x] = 2;
+
+    cudaMemcpy(device_region, host_region, region_size, cudaMemcpyHostToDevice);
+    cudaMemcpy(device_data, host_data, data_size, cudaMemcpyHostToDevice);
+
+
+    dim3 block_size;
+    block_size.x = 10;
+    block_size.y = 10;
+    block_size.z = 10;
+
+    dim3 grid_size;
+    grid_size.x = DATA_DIM / block_size.x + 1; // Add 1 to round up instead of down.
+    grid_size.y = DATA_DIM / block_size.y + 1;
+    grid_size.z = DATA_DIM / block_size.z + 1;
+    int i = 0;
+
+    printf("Getting ready to start that loop \n");
+
+    do{
+        i++;
+        *host_unfinished = 0;
+
+        cudaMemcpy(device_unfinished, host_unfinished, 1, cudaMemcpyHostToDevice);
+//        region_grow_kernel<<<grid_size, block_size>>>(device_data, device_region, device_unfinished);
+        cudaMemcpy(host_unfinished, device_unfinished, 1, cudaMemcpyDeviceToHost);
+
+        printf("unfinished: %d\n", *host_unfinished);
+
+    }while(*host_unfinished);
+
+    printf("Ran %d iterations\n",i);
+
+    cudaMemcpy(host_region, device_region, region_size, cudaMemcpyDeviceToHost);
+
+    return host_region;
 }
 
 
@@ -511,8 +604,10 @@ int main(int argc, char** argv){
     unsigned char* data = create_data();
 
     unsigned char* region = grow_region_serial(data);
+    printf("%s\n", cudaGetErrorString(cudaGetLastError()));
 
     unsigned char* image = raycast_gpu_texture(data, region);
+    printf("%s\n", cudaGetErrorString(cudaGetLastError()));
 
     printf("Got image! \n");
 
