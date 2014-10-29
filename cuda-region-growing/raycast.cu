@@ -531,11 +531,108 @@ __global__ void region_grow_kernel(unsigned char* data, unsigned char* region, i
 
 }
 
+__device__ bool is_border(int3 pixel, int dim){
+    if( pixel.x == 0 || pixel.y == 0 || pixel.z == 0){
+        return true;
+    }
+    if( pixel.x == dim - 1 || pixel.y == dim - 1 || pixel.z == dim - 1){
+        return true;
+    }
+
+    return false;
+}
 
 __global__ void region_grow_kernel_shared(unsigned char* data, unsigned char* region, int* unfinished){
 
-}
+    int local_region_dim = blockDim.x; //We use the knowledge that in this problem dim_x = dim_y = dim_z
+    int local_region_size = local_region_dim * local_region_dim * local_region_dim;
 
+    extern __shared__ char local_region[];
+    __shared__ bool block_done;
+
+
+    int3 local_pixel = {.x = threadIdx.x  
+                       ,.y = threadIdx.y
+                       ,.z = threadIdx.z
+    };
+
+    int local_index = (local_pixel.z * local_region_dim * local_region_dim) + (local_pixel.y * local_region_dim) + local_pixel.x;
+
+    int3 global_pixel = {.x = blockIdx.x * blockDim.x + (threadIdx.x - 1)
+        ,.y = blockIdx.y * blockDim.y + (threadIdx.y - 1)
+            ,.z = blockIdx.z * blockDim.z + (threadIdx.z - 1)
+    };
+
+    int global_index = (global_pixel.z * DATA_DIM * DATA_DIM) + (global_pixel.y * DATA_DIM) + global_pixel.x;
+
+    if(global_index >= DATA_DIM * DATA_DIM * DATA_DIM){
+        return;
+    }
+    if(global_index < 0){
+        return;
+    }
+
+    local_region[local_index] = region[global_index];
+    if(!is_border(local_pixel, local_region_dim)){
+        do{
+            block_done = true;
+            __syncthreads();
+
+            if(local_region[local_index] == 2){
+                block_done = false;
+                *unfinished = 1;
+
+
+                local_region[local_index] = 1;
+
+                int dx[6] = {-1,1,0,0,0,0};
+                int dy[6] = {0,0,-1,1,0,0};
+                int dz[6] = {0,0,0,0,-1,1};
+
+
+
+                for(int n = 0; n < 6; n++){
+                    int3 candidate;
+                    candidate.x = local_pixel.x + dx[n];
+                    candidate.y = local_pixel.y + dy[n];
+                    candidate.z = local_pixel.z + dz[n];
+
+                    int3 global_candidate;
+                    global_candidate.x = global_pixel.x + dx[n];
+                    global_candidate.y = global_pixel.y + dy[n];
+                    global_candidate.z = global_pixel.z + dz[n];
+
+                    if(candidate.x >= local_region_dim || candidate.y >= local_region_dim || candidate.z >= local_region_dim){
+                        continue;
+                    }
+                    if(candidate.x < 0 || candidate.y < 0 || candidate.z < 0){
+                        continue;
+                    }
+
+                    if(local_region[candidate.z*local_region_dim*local_region_dim + candidate.y * local_region_dim + candidate.x]){
+                        continue;
+                    }
+
+                    if(similar(data, global_pixel, global_candidate)){
+                        local_region[candidate.z*local_region_dim*local_region_dim + candidate.y * local_region_dim + candidate.x] = 2;
+                    }
+                }
+            }
+            __syncthreads();
+        }while(!block_done);
+    }
+
+    if(is_border(local_pixel, local_region_dim)){
+        if(local_region[local_index] == 2){ //Only copy the 2s from the border
+            region[global_index] = 2;
+        }
+    }else{
+        region[global_index] = local_region[local_index];
+    }
+
+//Get back to global data. how?
+
+}
 
 unsigned char* grow_region_gpu(unsigned char* host_data){
     int region_size = sizeof(unsigned char) * DATA_DIM*DATA_DIM*DATA_DIM;
@@ -594,8 +691,65 @@ unsigned char* grow_region_gpu(unsigned char* host_data){
 }
 
 
-unsigned char* grow_region_gpu_shared(unsigned char* data){
-    return NULL;
+unsigned char* grow_region_gpu_shared(unsigned char* host_data){
+    int region_size = sizeof(unsigned char) * DATA_DIM*DATA_DIM*DATA_DIM;
+    int data_size = region_size;
+
+    unsigned char* host_region = (unsigned char*)calloc(sizeof(unsigned char), DATA_DIM*DATA_DIM*DATA_DIM);
+    
+    int*            host_unfinished = (int*) calloc(sizeof(int), 1);
+
+    unsigned char*  device_region;
+    unsigned char*  device_data;
+    int*            device_unfinished;
+
+    cudaMalloc(&device_region, region_size);
+    cudaMalloc(&device_data, data_size);
+    cudaMalloc(&device_unfinished, 1);
+
+    //plant seed
+    int3 seed = {.x=50, .y=300, .z=300};
+    host_region[seed.z *DATA_DIM*DATA_DIM + seed.y*DATA_DIM + seed.x] = 2;
+
+    cudaMemcpy(device_region, host_region, region_size, cudaMemcpyHostToDevice);
+    cudaMemcpy(device_data, host_data, data_size, cudaMemcpyHostToDevice);
+
+
+    dim3 block_size;
+    block_size.x = 9;
+    block_size.y = 9;
+    block_size.z = 9;
+
+    dim3 grid_size;
+    grid_size.x = DATA_DIM / (block_size.x - 2) + 1; // - 2 to include the borders 
+    grid_size.y = DATA_DIM / (block_size.y - 2) + 1;
+    grid_size.z = DATA_DIM / (block_size.z - 2) + 1;
+    
+    int local_region_dim = block_size.x; //We use the knowledge that in this problem dim_x = dim_y = dim_z
+    int local_region_size = local_region_dim * local_region_dim * local_region_dim;
+
+    int i = 0;
+
+    printf("Getting ready to start that loop \n");
+
+    do{
+        printf("loop\n");
+        i++;
+        *host_unfinished = 0;
+        cudaMemcpy(device_unfinished, host_unfinished, 1, cudaMemcpyHostToDevice);
+        region_grow_kernel_shared<<<grid_size, block_size, sizeof(char) * local_region_size>>>(device_data, device_region, device_unfinished);
+        cudaMemcpy(host_unfinished, device_unfinished, 1, cudaMemcpyDeviceToHost);
+    }while(*host_unfinished);
+
+    printf("Ran %d iterations\n",i);
+
+    cudaMemcpy(host_region, device_region, region_size, cudaMemcpyDeviceToHost);
+
+    cudaFree(device_region);
+    cudaFree(device_data);
+    cudaFree(device_unfinished);
+
+    return host_region;
 }
 
 
@@ -613,7 +767,7 @@ int main(int argc, char** argv){
     print_time(start, end);
 
     gettimeofday(&start, NULL);
-    unsigned char* region = grow_region_gpu(data);
+    unsigned char* region = grow_region_gpu_shared(data);
     gettimeofday(&end, NULL);
     printf("Grow time:\n");
     print_time(start, end);
