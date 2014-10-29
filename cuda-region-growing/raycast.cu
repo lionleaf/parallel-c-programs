@@ -621,7 +621,7 @@ int main(int argc, char** argv){
     printf("Errors: %s\n", cudaGetErrorString(cudaGetLastError()));
 
     gettimeofday(&start, NULL);
-    unsigned char* image = raycast_gpu_texture(data, region);
+    unsigned char* image = raycast_gpu(data, region);
     gettimeofday(&end, NULL);
     printf("Raycast time: \n");
     print_time(start, end);
