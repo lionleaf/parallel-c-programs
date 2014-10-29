@@ -479,9 +479,9 @@ unsigned char* raycast_gpu_texture(unsigned char* data, unsigned char* region){
     unsigned char* host_image = (unsigned char*)malloc(sizeof(unsigned char)*IMAGE_DIM*IMAGE_DIM);
     cudaMemcpy(host_image, device_image, image_size, cudaMemcpyDeviceToHost);
 
-    cudaFree(data_array);
-    cudaFree(region_array);
-    cudaFree(device_image);
+//   cudaFree(data_array);
+//   cudaFree(region_array);
+//   cudaFree(device_image);
 
 
 
@@ -580,7 +580,6 @@ unsigned char* grow_region_gpu(unsigned char* host_data){
         cudaMemcpy(device_unfinished, host_unfinished, 1, cudaMemcpyHostToDevice);
         region_grow_kernel<<<grid_size, block_size>>>(device_data, device_region, device_unfinished);
         cudaMemcpy(host_unfinished, device_unfinished, 1, cudaMemcpyDeviceToHost);
-        printf("unfinished: %d\n", *host_unfinished);
     }while(*host_unfinished);
 
     printf("Ran %d iterations\n",i);
@@ -621,7 +620,7 @@ int main(int argc, char** argv){
     printf("Errors: %s\n", cudaGetErrorString(cudaGetLastError()));
 
     gettimeofday(&start, NULL);
-    unsigned char* image = raycast_gpu(data, region);
+    unsigned char* image = raycast_gpu_texture(data, region);
     gettimeofday(&end, NULL);
     printf("Raycast time: \n");
     print_time(start, end);
