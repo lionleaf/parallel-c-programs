@@ -545,7 +545,6 @@ __device__ bool is_border(int3 pixel, int dim){
 __global__ void region_grow_kernel_shared(unsigned char* data, unsigned char* region, int* unfinished){
 
     int local_region_dim = blockDim.x; //We use the knowledge that in this problem dim_x = dim_y = dim_z
-    int local_region_size = local_region_dim * local_region_dim * local_region_dim;
 
     extern __shared__ char local_region[];
     __shared__ bool block_done;
@@ -573,65 +572,56 @@ __global__ void region_grow_kernel_shared(unsigned char* data, unsigned char* re
     }
 
     local_region[local_index] = region[global_index];
-    if(!is_border(local_pixel, local_region_dim)){
-        do{
-            block_done = true;
-            __syncthreads();
+    do{
+        block_done = true;
+        __syncthreads();
 
-            if(local_region[local_index] == 2){
-                block_done = false;
-                *unfinished = 1;
+        if(local_region[local_index] == 2 && !is_border(local_pixel, local_region_dim)){
+            local_region[local_index] = 1;
 
+            int dx[6] = {-1,1,0,0,0,0};
+            int dy[6] = {0,0,-1,1,0,0};
+            int dz[6] = {0,0,0,0,-1,1};
 
-                local_region[local_index] = 1;
+            for(int n = 0; n < 6; n++){
+                int3 candidate;
+                candidate.x = local_pixel.x + dx[n];
+                candidate.y = local_pixel.y + dy[n];
+                candidate.z = local_pixel.z + dz[n];
 
-                int dx[6] = {-1,1,0,0,0,0};
-                int dy[6] = {0,0,-1,1,0,0};
-                int dz[6] = {0,0,0,0,-1,1};
+                int3 global_candidate;
+                global_candidate.x = global_pixel.x + dx[n];
+                global_candidate.y = global_pixel.y + dy[n];
+                global_candidate.z = global_pixel.z + dz[n];
 
+                if(candidate.x >= local_region_dim || candidate.y >= local_region_dim || candidate.z >= local_region_dim){
+                    continue;
+                }
+                if(candidate.x < 0 || candidate.y < 0 || candidate.z < 0){
+                    continue;
+                }
 
+                if(local_region[candidate.z*local_region_dim*local_region_dim + candidate.y * local_region_dim + candidate.x]){
+                    continue;
+                }
 
-                for(int n = 0; n < 6; n++){
-                    int3 candidate;
-                    candidate.x = local_pixel.x + dx[n];
-                    candidate.y = local_pixel.y + dy[n];
-                    candidate.z = local_pixel.z + dz[n];
-
-                    int3 global_candidate;
-                    global_candidate.x = global_pixel.x + dx[n];
-                    global_candidate.y = global_pixel.y + dy[n];
-                    global_candidate.z = global_pixel.z + dz[n];
-
-                    if(candidate.x >= local_region_dim || candidate.y >= local_region_dim || candidate.z >= local_region_dim){
-                        continue;
-                    }
-                    if(candidate.x < 0 || candidate.y < 0 || candidate.z < 0){
-                        continue;
-                    }
-
-                    if(local_region[candidate.z*local_region_dim*local_region_dim + candidate.y * local_region_dim + candidate.x]){
-                        continue;
-                    }
-
-                    if(similar(data, global_pixel, global_candidate)){
-                        local_region[candidate.z*local_region_dim*local_region_dim + candidate.y * local_region_dim + candidate.x] = 2;
-                    }
+                if(similar(data, global_pixel, global_candidate)){
+                    local_region[candidate.z*local_region_dim*local_region_dim + candidate.y * local_region_dim + candidate.x] = 2;
+                    block_done = false;
+                    *unfinished = 1;
                 }
             }
-            __syncthreads();
-        }while(!block_done);
-    }
+        }
+        __syncthreads();
+    }while(!block_done);
 
- /*   if(is_border(local_pixel, local_region_dim)){
+    /*if(is_border(local_pixel, local_region_dim)){
         if(local_region[local_index] == 2){ //Only copy the 2s from the border
             region[global_index] = local_region[local_index];
         }
     }else{
         region[global_index] = local_region[local_index];
-    }
-*/
-        region[global_index] = local_region[local_index];
-//Get back to global data. how?
+    }*/
 
 }
 
