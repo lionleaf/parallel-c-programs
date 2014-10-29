@@ -622,14 +622,15 @@ __global__ void region_grow_kernel_shared(unsigned char* data, unsigned char* re
         }while(!block_done);
     }
 
-    if(is_border(local_pixel, local_region_dim)){
+ /*   if(is_border(local_pixel, local_region_dim)){
         if(local_region[local_index] == 2){ //Only copy the 2s from the border
-            region[global_index] = 2;
+            region[global_index] = local_region[local_index];
         }
     }else{
         region[global_index] = local_region[local_index];
     }
-
+*/
+        region[global_index] = local_region[local_index];
 //Get back to global data. how?
 
 }
