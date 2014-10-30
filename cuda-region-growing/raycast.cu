@@ -414,6 +414,7 @@ __global__ void raycast_kernel_texture(unsigned char* image){
 
 
 unsigned char* raycast_gpu(unsigned char* data, unsigned char* region){
+
     //Declare and allocate device memory
     unsigned char* device_image;
     unsigned char* device_data;
@@ -445,6 +446,7 @@ unsigned char* raycast_gpu(unsigned char* data, unsigned char* region){
 
 
 unsigned char* raycast_gpu_texture(unsigned char* data, unsigned char* region){
+
     //We let the texture interpolate automatically
     data_texture.filterMode = cudaFilterModeLinear; 
     region_texture.filterMode = cudaFilterModeLinear; 
@@ -503,6 +505,7 @@ unsigned char* raycast_gpu_texture(unsigned char* data, unsigned char* region){
 
 
 __global__ void region_grow_kernel(unsigned char* data, unsigned char* region, int* unfinished){
+
     int3 voxel;
     voxel.x = blockIdx.x * blockDim.x + threadIdx.x;
     voxel.y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -541,10 +544,10 @@ __global__ void region_grow_kernel(unsigned char* data, unsigned char* region, i
         }
 
     }
-
 }
 
 __device__ bool is_border(int3 voxel, int dim){
+
     if( voxel.x == 0 || voxel.y == 0 || voxel.z == 0){
         return true;
     }
@@ -556,9 +559,8 @@ __device__ bool is_border(int3 voxel, int dim){
 }
 
 
-
 __global__ void region_grow_kernel_shared(unsigned char* data, unsigned char* region_global, int* unfinished){
-
+    
     //Shared array within the block. The border of this 3D cube overlaps with other blocks
     extern __shared__ unsigned char region_local[];
     __shared__ bool block_done;
@@ -596,10 +598,9 @@ __global__ void region_grow_kernel_shared(unsigned char* data, unsigned char* re
        Also, the barrier count is incremented with 32 each time a warp reaches the
        __syncthreads, so if the returning threads does not reduce the number of 
        warps, it would also not deadlock.
-
        Anyway, returning and then using __syncthreads is a bad, bad idea.
-   */
-    if(index_global < DATA_SIZE || index_global >= 0){
+     */
+    if(inside(voxel_global)){
         //Copy global data into the shared block. Each thread copies one value
         region_local[index_local] = region_global[index_global];
     }
@@ -612,7 +613,11 @@ __global__ void region_grow_kernel_shared(unsigned char* data, unsigned char* re
         __syncthreads();
 
         //Important not to grow 2s on the border, as they can't reach all neighbours
-        if(region_local[index_local] == 2 && !is_border(voxel_local, blockDim.x)){
+        //We also don't execute this for pixels outside the global volume
+        if(region_local[index_local] == 2 
+                && !is_border(voxel_local, blockDim.x)
+                && inside(voxel_global)){
+
             region_local[index_local] = 1;
 
             int dx[6] = {-1,1,0,0,0,0};
@@ -650,7 +655,7 @@ __global__ void region_grow_kernel_shared(unsigned char* data, unsigned char* re
         __syncthreads();
     }while(!block_done);
 
-    if(index_global >= DATA_SIZE || index_global < 0){
+    if(!inside(voxel_global)){
         return; //There are no more __syncthreads, so it's safe to return
     }
 
@@ -665,6 +670,7 @@ __global__ void region_grow_kernel_shared(unsigned char* data, unsigned char* re
         }
     }
 }
+
 
 unsigned char* grow_region_gpu(unsigned char* host_data){
     //Host variables
@@ -724,58 +730,63 @@ unsigned char* grow_region_gpu(unsigned char* host_data){
 
 
 unsigned char* grow_region_gpu_shared(unsigned char* host_data){
-    int region_size = sizeof(unsigned char) * DATA_DIM * DATA_DIM * DATA_DIM;
-    int data_size = region_size;
+    //Host variables
+    unsigned char* host_region = (unsigned char*)calloc(sizeof(unsigned char), DATA_SIZE);
+    int            host_unfinished;
 
-    unsigned char* host_region = (unsigned char*)calloc(sizeof(unsigned char), DATA_DIM * DATA_DIM * DATA_DIM);
-    int*            host_unfinished = (int*) calloc(sizeof(int), 1);
-
+    //Device variables
     unsigned char*  device_region;
     unsigned char*  device_data;
     int*            device_unfinished;
 
-    cudaMalloc(&device_region, region_size);
-    cudaMalloc(&device_data, data_size);
+    //Allocate device memory
+    cudaMalloc(&device_region, DATA_SIZE_BYTES);
+    cudaMalloc(&device_data, DATA_SIZE_BYTES);
     cudaMalloc(&device_unfinished, sizeof(int));
 
     //plant seed
     int3 seed = {.x=50, .y=300, .z=300};
-    host_region[seed.z *DATA_DIM*DATA_DIM + seed.y*DATA_DIM + seed.x] = 2;
+    host_region[index(seed.z, seed.y, seed.x)] = 2;
 
-    cudaMemcpy(device_region, host_region, region_size, cudaMemcpyHostToDevice);
-    cudaMemcpy(device_data, host_data, data_size, cudaMemcpyHostToDevice);
+    //Copy data to device
+    cudaMemcpy(device_region, host_region, DATA_SIZE_BYTES, cudaMemcpyHostToDevice);
+    cudaMemcpy(device_data, host_data, DATA_SIZE_BYTES, cudaMemcpyHostToDevice);
 
-
+    /* 
+       Block size here is padded by 2 to enable overlapping border.
+       So if the block_size is 9x9x9, it is a 7x7x7 block with an overlapping
+       border wrapping it.
+     */
     dim3 block_size;
     block_size.x = 9;
     block_size.y = 9;
     block_size.z = 9;
 
+    /*
+       Grid size is calculated without the borders, hence -2.
+     */
     dim3 grid_size;
-    grid_size.x = DATA_DIM / (block_size.x - 2) + 1; // - 2 to include the borders 
+    grid_size.x = DATA_DIM / (block_size.x - 2) + 1; 
     grid_size.y = DATA_DIM / (block_size.y - 2) + 1;
     grid_size.z = DATA_DIM / (block_size.z - 2) + 1;
 
-    int local_region_dim = block_size.x; //We use the knowledge that in this problem dim_x = dim_y = dim_z
-    int local_region_size = local_region_dim * local_region_dim * local_region_dim;
+    //Calculate the size of the shared region array within the kernel
+    int local_region_size = sizeof(char) * block_size.x * block_size.y * block_size.z;
 
-    int i = 0;
-
-    printf("Getting ready to start that loop \n");
-
+    //Execute the kernel untill done
     do{
-        //printf("looop\n");
-        i++;
-        *host_unfinished = 0;
-        cudaMemcpy(device_unfinished, host_unfinished, 1, cudaMemcpyHostToDevice);
-        region_grow_kernel_shared<<<grid_size, block_size, sizeof(char) * local_region_size>>>(device_data, device_region, device_unfinished);
-        cudaMemcpy(host_unfinished, device_unfinished, 1, cudaMemcpyDeviceToHost);
-    }while(*host_unfinished != 0);
+        host_unfinished = 0;
+        cudaMemcpy(device_unfinished, &host_unfinished, 1, cudaMemcpyHostToDevice);
 
-    printf("Ran %d iterations\n",i);
+        region_grow_kernel_shared<<<grid_size, block_size, local_region_size>>>(device_data, device_region, device_unfinished);
 
-    cudaMemcpy(host_region, device_region, region_size, cudaMemcpyDeviceToHost);
+        cudaMemcpy(&host_unfinished, device_unfinished, 1, cudaMemcpyDeviceToHost);
+    }while(host_unfinished != 0);
 
+    //Copy result to host
+    cudaMemcpy(host_region, device_region, DATA_SIZE_BYTES, cudaMemcpyDeviceToHost);
+
+    //Free device memory
     cudaFree(device_region);
     cudaFree(device_data);
     cudaFree(device_unfinished);
@@ -790,21 +801,21 @@ int main(int argc, char** argv){
 
     gettimeofday(&start, NULL);
     unsigned char* data = create_data();
-    printf("Create data time:\n");
+    printf("\nCreate data time:\n");
     gettimeofday(&end, NULL);
     print_time(start, end);
 
     gettimeofday(&start, NULL);
-    unsigned char* region = grow_region_gpu(data);
+    unsigned char* region = grow_region_gpu_shared(data);
     gettimeofday(&end, NULL);
-    printf("Grow time:\n");
+    printf("\nGrow time:\n");
     print_time(start, end);
     printf("Errors: %s\n", cudaGetErrorString(cudaGetLastError()));
 
     gettimeofday(&start, NULL);
     unsigned char* image = raycast_gpu_texture(data, region);
     gettimeofday(&end, NULL);
-    printf("Raycast time: \n");
+    printf("\nRaycast time: \n");
     print_time(start, end);
     printf("Errors: %s\n", cudaGetErrorString(cudaGetLastError()));
 
@@ -814,6 +825,6 @@ int main(int argc, char** argv){
     gettimeofday(&start, NULL);
     write_bmp(image, IMAGE_DIM, IMAGE_DIM);
     gettimeofday(&end, NULL);
-    printf("bmp time: \n");
+    printf("\nbmp time: \n");
     print_time(start, end);
 }
