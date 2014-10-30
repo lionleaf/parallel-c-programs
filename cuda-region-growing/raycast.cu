@@ -9,8 +9,13 @@
 
 // data is 3D, total size is DATA_DIM x DATA_DIM x DATA_DIM
 #define DATA_DIM 512
+#define DATA_SIZE (DATA_DIM * DATA_DIM * DATA_DIM) 
+#define DATA_SIZE_BYTES (sizeof(unsigned char) * DATA_SIZE)
+
 // image is 2D, total size is IMAGE_DIM x IMAGE_DIM
 #define IMAGE_DIM 512
+#define IMAGE_SIZE (IMAGE_DIM * IMAGE_DIM)
+#define IMAGE_SIZE_BYTES (sizeof(unsigned char) * IMAGE_SIZE)
 
 texture<char, cudaTextureType3D, cudaReadModeNormalizedFloat> data_texture;
 texture<char, cudaTextureType3D, cudaReadModeElementType> region_texture;
@@ -333,8 +338,6 @@ __global__ void raycast_kernel(unsigned char* data, unsigned char* image, unsign
     float pixel_width = tan(fov/2.0)/(IMAGE_DIM/2);
     float step_size = 0.5;
 
-    // For each pixel
-
     int x = blockIdx.x - (IMAGE_DIM/2);
     int y = threadIdx.x - (IMAGE_DIM/2);
 
@@ -345,9 +348,7 @@ __global__ void raycast_kernel(unsigned char* data, unsigned char* image, unsign
     ray = normalize(ray);
     float3 pos = camera;
 
-    // Move along the ray, we stop if the color becomes completely white,
-    // or we've done 5000 iterations (5000 is a bit arbitrary, it needs 
-    // to be big enough to let rays pass through the entire volume)
+    // Move along the ray
     int i = 0;
     float color = 0;
     while(color < 255 && i < 5000){
@@ -382,8 +383,6 @@ __global__ void raycast_kernel_texture(unsigned char* image){
     float pixel_width = tan(fov/2.0)/(IMAGE_DIM/2);
     float step_size = 0.5;
 
-    // For each pixel
-
     int x = blockIdx.x - (IMAGE_DIM/2);
     int y = threadIdx.x - (IMAGE_DIM/2);
 
@@ -394,9 +393,7 @@ __global__ void raycast_kernel_texture(unsigned char* image){
     ray = normalize(ray);
     float3 pos = camera;
 
-    // Move along the ray, we stop if the color becomes completely white,
-    // or we've done 5000 iterations (5000 is a bit arbitrary, it needs 
-    // to be big enough to let rays pass through the entire volume)
+    // Move along the ray
     int i = 0;
     float color = 0;
     while(color < 255 && i < 5000){
@@ -557,9 +554,9 @@ __global__ void region_grow_kernel_shared(unsigned char* data, unsigned char* re
 
     int local_index = (local_pixel.z * local_region_dim * local_region_dim) + (local_pixel.y * local_region_dim) + local_pixel.x;
 
-    int3 global_pixel = {.x = blockIdx.x * blockDim.x + (threadIdx.x - 1)
-        ,.y = blockIdx.y * blockDim.y + (threadIdx.y - 1)
-            ,.z = blockIdx.z * blockDim.z + (threadIdx.z - 1)
+    int3 global_pixel = {.x = blockIdx.x * blockDim.x + threadIdx.x - 1
+            ,.y = blockIdx.y * blockDim.y + threadIdx.y - 1
+            ,.z = blockIdx.z * blockDim.z + threadIdx.z - 1
     };
 
     int global_index = (global_pixel.z * DATA_DIM * DATA_DIM) + (global_pixel.y * DATA_DIM) + global_pixel.x;
@@ -594,34 +591,31 @@ __global__ void region_grow_kernel_shared(unsigned char* data, unsigned char* re
                 global_candidate.y = global_pixel.y + dy[n];
                 global_candidate.z = global_pixel.z + dz[n];
 
-                if(candidate.x >= local_region_dim || candidate.y >= local_region_dim || candidate.z >= local_region_dim){
-                    continue;
-                }
-                if(candidate.x < 0 || candidate.y < 0 || candidate.z < 0){
+                int candidate_local_index = (candidate.z * local_region_dim * local_region_dim) 
+                                            + (candidate.y * local_region_dim)
+                                            + candidate.x;
+
+                if(local_region[candidate_local_index] != 0){
                     continue;
                 }
 
-                if(local_region[candidate.z*local_region_dim*local_region_dim + candidate.y * local_region_dim + candidate.x]){
-                    continue;
-                }
-
-                if(similar(data, global_pixel, global_candidate)){
-                    local_region[candidate.z*local_region_dim*local_region_dim + candidate.y * local_region_dim + candidate.x] = 2;
+                //if(similar(data, global_pixel, global_candidate)){
+                    local_region[candidate_local_index] = 2;
                     block_done = false;
                     *unfinished = 1;
-                }
+               // }
             }
         }
         __syncthreads();
     }while(!block_done);
 
-    /*if(is_border(local_pixel, local_region_dim)){
-        if(local_region[local_index] == 2){ //Only copy the 2s from the border
-            region[global_index] = local_region[local_index];
+    if(is_border(local_pixel, local_region_dim)){
+        if(local_region[local_index] == 2 && local_pixel.y == 0){ //Only copy the 2s from the border
+            region[global_index] = 2;
         }
     }else{
         region[global_index] = local_region[local_index];
-    }*/
+    }
 
 }
 
@@ -683,11 +677,10 @@ unsigned char* grow_region_gpu(unsigned char* host_data){
 
 
 unsigned char* grow_region_gpu_shared(unsigned char* host_data){
-    int region_size = sizeof(unsigned char) * DATA_DIM*DATA_DIM*DATA_DIM;
+    int region_size = sizeof(unsigned char) * DATA_DIM * DATA_DIM * DATA_DIM;
     int data_size = region_size;
 
-    unsigned char* host_region = (unsigned char*)calloc(sizeof(unsigned char), DATA_DIM*DATA_DIM*DATA_DIM);
-    
+    unsigned char* host_region = (unsigned char*)calloc(sizeof(unsigned char), DATA_DIM * DATA_DIM * DATA_DIM);
     int*            host_unfinished = (int*) calloc(sizeof(int), 1);
 
     unsigned char*  device_region;
@@ -696,7 +689,7 @@ unsigned char* grow_region_gpu_shared(unsigned char* host_data){
 
     cudaMalloc(&device_region, region_size);
     cudaMalloc(&device_data, data_size);
-    cudaMalloc(&device_unfinished, 1);
+    cudaMalloc(&device_unfinished, sizeof(int));
 
     //plant seed
     int3 seed = {.x=50, .y=300, .z=300};
@@ -730,7 +723,8 @@ unsigned char* grow_region_gpu_shared(unsigned char* host_data){
         cudaMemcpy(device_unfinished, host_unfinished, 1, cudaMemcpyHostToDevice);
         region_grow_kernel_shared<<<grid_size, block_size, sizeof(char) * local_region_size>>>(device_data, device_region, device_unfinished);
         cudaMemcpy(host_unfinished, device_unfinished, 1, cudaMemcpyDeviceToHost);
-    }while(*host_unfinished);
+    //}while(*host_unfinished != 0);
+    }while(i<20);
 
     printf("Ran %d iterations\n",i);
 
