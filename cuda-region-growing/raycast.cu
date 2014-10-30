@@ -433,7 +433,7 @@ unsigned char* raycast_gpu(unsigned char* data, unsigned char* region){
 
     //Copy result from device
     cudaMemcpy(host_image, device_image, IMAGE_SIZE_BYTES, cudaMemcpyDeviceToHost);
-    
+
     //Free device memory
     cudaFree(device_region);
     cudaFree(device_data);
@@ -444,7 +444,7 @@ unsigned char* raycast_gpu(unsigned char* data, unsigned char* region){
 
 unsigned char* raycast_gpu_texture(unsigned char* data, unsigned char* region){
     data_texture.filterMode = cudaFilterModeLinear; //Interpolate the data texture
-    
+
     cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc(8,0,0,0,cudaChannelFormatKindUnsigned);
     cudaExtent extent = make_cudaExtent(DATA_DIM, DATA_DIM, DATA_DIM);
 
@@ -453,7 +453,7 @@ unsigned char* raycast_gpu_texture(unsigned char* data, unsigned char* region){
     cudaArray* region_array;
     cudaMalloc3DArray(&region_array, &channelDesc, extent, 0);
     cudaMalloc3DArray(&data_array, &channelDesc, extent, 0);
-    
+
     //Copy data to region array
     cudaMemcpy3DParms copyParams = {0};
     copyParams.srcPtr   = make_cudaPitchedPtr(region, sizeof(char) * IMAGE_DIM, IMAGE_DIM, IMAGE_DIM);
@@ -488,7 +488,7 @@ unsigned char* raycast_gpu_texture(unsigned char* data, unsigned char* region){
     //Unbind textures
     cudaUnbindTexture(data_texture);
     cudaUnbindTexture(region_texture);
-    
+
     //Free memory on the device
     cudaFreeArray(data_array);
     cudaFreeArray(region_array);
@@ -499,40 +499,40 @@ unsigned char* raycast_gpu_texture(unsigned char* data, unsigned char* region){
 
 
 __global__ void region_grow_kernel(unsigned char* data, unsigned char* region, int* unfinished){
-    int3 pixel = {.x = blockIdx.x * blockDim.x + threadIdx.x
-                 ,.y = blockIdx.y * blockDim.y + threadIdx.y
-                 ,.z = blockIdx.z * blockDim.z + threadIdx.z
-                };
+    int3 voxel;
+    voxel.x = blockIdx.x * blockDim.x + threadIdx.x;
+    voxel.y = blockIdx.y * blockDim.y + threadIdx.y;
+    voxel.z = blockIdx.z * blockDim.z + threadIdx.z;
 
-    int index = (pixel.z * DATA_DIM * DATA_DIM) + (pixel.y * DATA_DIM) + pixel.x;
+    int ind = index(voxel.z, voxel.y, voxel.x);
 
-    if(region[index] == 2){
+    if(region[ind] == 2){
         //Race conditions should not matter, as we only write 1s, and if one of them gets through it's enough
         *unfinished = 1; 
-        region[index] = 1;
+        region[ind] = 1;
 
         int dx[6] = {-1,1,0,0,0,0};
         int dy[6] = {0,0,-1,1,0,0};
         int dz[6] = {0,0,0,0,-1,1};
-        
+
 
 
         for(int n = 0; n < 6; n++){
             int3 candidate;
-            candidate.x = pixel.x + dx[n];
-            candidate.y = pixel.y + dy[n];
-            candidate.z = pixel.z + dz[n];
+            candidate.x = voxel.x + dx[n];
+            candidate.y = voxel.y + dy[n];
+            candidate.z = voxel.z + dz[n];
 
             if(!inside(candidate)){
                 continue;
             }
 
-            if(region[candidate.z*DATA_DIM*DATA_DIM + candidate.y*DATA_DIM + candidate.x]){
+            if(region[index(candidate.z, candidate.y, candidate.x)]){
                 continue;
             }
 
-            if(similar(data, pixel, candidate)){
-                region[candidate.z*DATA_DIM*DATA_DIM + candidate.y*DATA_DIM + candidate.x] = 2;
+            if(similar(data, voxel, candidate)){
+                region[index(candidate.z, candidate.y, candidate.x)] = 2;
             }
         }
 
@@ -540,11 +540,11 @@ __global__ void region_grow_kernel(unsigned char* data, unsigned char* region, i
 
 }
 
-__device__ bool is_border(int3 pixel, int dim){
-    if( pixel.x == 0 || pixel.y == 0 || pixel.z == 0){
+__device__ bool is_border(int3 voxel, int dim){
+    if( voxel.x == 0 || voxel.y == 0 || voxel.z == 0){
         return true;
     }
-    if( pixel.x == dim - 1 || pixel.y == dim - 1 || pixel.z == dim - 1){
+    if( voxel.x == dim - 1 || voxel.y == dim - 1 || voxel.z == dim - 1){
         return true;
     }
 
@@ -558,19 +558,19 @@ __global__ void region_grow_kernel_shared(unsigned char* data, unsigned char* re
     __shared__ bool block_done;
 
 
-    int3 local_pixel = {.x = threadIdx.x  
-                       ,.y = threadIdx.y
-                       ,.z = threadIdx.z
+    int3 local_voxel = {.x = threadIdx.x  
+        ,.y = threadIdx.y
+            ,.z = threadIdx.z
     };
 
-    int local_index = (local_pixel.z * local_region_dim * local_region_dim) + (local_pixel.y * local_region_dim) + local_pixel.x;
+    int local_index = (local_voxel.z * local_region_dim * local_region_dim) + (local_voxel.y * local_region_dim) + local_voxel.x;
 
-    int3 global_pixel = {.x = blockIdx.x * blockDim.x + threadIdx.x - 1
-            ,.y = blockIdx.y * blockDim.y + threadIdx.y - 1
-            ,.z = blockIdx.z * blockDim.z + threadIdx.z - 1
+    int3 global_voxel = {.x = blockIdx.x * (blockDim.x - 2) + threadIdx.x - 1 
+        ,.y = blockIdx.y * (blockDim.y - 2) + threadIdx.y - 1 
+            ,.z = blockIdx.z * (blockDim.z - 2) + threadIdx.z - 1 
     };
 
-    int global_index = (global_pixel.z * DATA_DIM * DATA_DIM) + (global_pixel.y * DATA_DIM) + global_pixel.x;
+    int global_index = (global_voxel.z * DATA_DIM * DATA_DIM) + (global_voxel.y * DATA_DIM) + global_voxel.x;
 
     if(global_index >= DATA_DIM * DATA_DIM * DATA_DIM){
         return;
@@ -584,7 +584,7 @@ __global__ void region_grow_kernel_shared(unsigned char* data, unsigned char* re
         block_done = true;
         __syncthreads();
 
-        if(local_region[local_index] == 2 && !is_border(local_pixel, local_region_dim)){
+        if(local_region[local_index] == 2 && !is_border(local_voxel, local_region_dim)){
             local_region[local_index] = 1;
 
             int dx[6] = {-1,1,0,0,0,0};
@@ -593,39 +593,42 @@ __global__ void region_grow_kernel_shared(unsigned char* data, unsigned char* re
 
             for(int n = 0; n < 6; n++){
                 int3 candidate;
-                candidate.x = local_pixel.x + dx[n];
-                candidate.y = local_pixel.y + dy[n];
-                candidate.z = local_pixel.z + dz[n];
+                candidate.x = local_voxel.x + dx[n];
+                candidate.y = local_voxel.y + dy[n];
+                candidate.z = local_voxel.z + dz[n];
 
                 int3 global_candidate;
-                global_candidate.x = global_pixel.x + dx[n];
-                global_candidate.y = global_pixel.y + dy[n];
-                global_candidate.z = global_pixel.z + dz[n];
+                global_candidate.x = global_voxel.x + dx[n];
+                global_candidate.y = global_voxel.y + dy[n];
+                global_candidate.z = global_voxel.z + dz[n];
 
                 int candidate_local_index = (candidate.z * local_region_dim * local_region_dim) 
-                                            + (candidate.y * local_region_dim)
-                                            + candidate.x;
+                    + (candidate.y * local_region_dim)
+                    + candidate.x;
 
                 if(local_region[candidate_local_index] != 0){
                     continue;
                 }
 
-                //if(similar(data, global_pixel, global_candidate)){
+                if(similar(data, global_voxel, global_candidate)){
                     local_region[candidate_local_index] = 2;
                     block_done = false;
                     *unfinished = 1;
-               // }
+                }
             }
         }
         __syncthreads();
     }while(!block_done);
 
-    if(is_border(local_pixel, local_region_dim)){
-        if(local_region[local_index] == 2 && local_pixel.y == 0){ //Only copy the 2s from the border
+    __syncthreads();
+    if(is_border(local_voxel, local_region_dim)){
+        if(local_region[local_index] == 2){ //Only copy the 2s from the border
             region[global_index] = 2;
         }
     }else{
-        region[global_index] = local_region[local_index];
+        if(local_region[local_index] == 1){
+            region[global_index] = 1;
+        }
     }
 }
 
@@ -634,7 +637,7 @@ unsigned char* grow_region_gpu(unsigned char* host_data){
     int data_size = region_size;
 
     unsigned char* host_region = (unsigned char*)calloc(sizeof(unsigned char), DATA_DIM*DATA_DIM*DATA_DIM);
-    
+
     int*            host_unfinished = (int*) calloc(sizeof(int), 1);
 
     unsigned char*  device_region;
@@ -718,7 +721,7 @@ unsigned char* grow_region_gpu_shared(unsigned char* host_data){
     grid_size.x = DATA_DIM / (block_size.x - 2) + 1; // - 2 to include the borders 
     grid_size.y = DATA_DIM / (block_size.y - 2) + 1;
     grid_size.z = DATA_DIM / (block_size.z - 2) + 1;
-    
+
     int local_region_dim = block_size.x; //We use the knowledge that in this problem dim_x = dim_y = dim_z
     int local_region_size = local_region_dim * local_region_dim * local_region_dim;
 
@@ -727,14 +730,13 @@ unsigned char* grow_region_gpu_shared(unsigned char* host_data){
     printf("Getting ready to start that loop \n");
 
     do{
-        printf("loop\n");
+        //printf("looop\n");
         i++;
         *host_unfinished = 0;
         cudaMemcpy(device_unfinished, host_unfinished, 1, cudaMemcpyHostToDevice);
         region_grow_kernel_shared<<<grid_size, block_size, sizeof(char) * local_region_size>>>(device_data, device_region, device_unfinished);
         cudaMemcpy(host_unfinished, device_unfinished, 1, cudaMemcpyDeviceToHost);
-    //}while(*host_unfinished != 0);
-    }while(i<20);
+    }while(*host_unfinished != 0);
 
     printf("Ran %d iterations\n",i);
 
