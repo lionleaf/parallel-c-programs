@@ -399,7 +399,7 @@ __global__ void raycast_kernel_texture(unsigned char* image){
     while(color < 255 && i < 5000){
         i++;
         pos = add(pos, scale(ray, step_size));          // Update position
-        int r = tex3D(region_texture, pos.x, pos.y, pos.z);    // Check if we're in the region
+        int r = tex3D(region_texture, pos.x, pos.y, pos.z);    // Look up value from texture
         if(inside(pos)){
             color += 255 * tex3D(data_texture, pos.x, pos.y, pos.z)*(0.01 + r) ;       // Update the color based on data value, and if we're in the region
         }
@@ -412,75 +412,87 @@ __global__ void raycast_kernel_texture(unsigned char* image){
 
 
 unsigned char* raycast_gpu(unsigned char* data, unsigned char* region){
+    //Declare and allocate device memory
     unsigned char* device_image;
     unsigned char* device_data;
     unsigned char* device_region;
 
-    int data_size = sizeof(unsigned char) * IMAGE_DIM * IMAGE_DIM * IMAGE_DIM;
-    int image_size = sizeof(unsigned char) * IMAGE_DIM * IMAGE_DIM;
+    cudaMalloc(&device_image, IMAGE_SIZE_BYTES); 
+    cudaMalloc(&device_data, DATA_SIZE_BYTES);
+    cudaMalloc(&device_region, DATA_SIZE_BYTES);
 
-    cudaMalloc(&device_image, image_size); 
-    cudaMalloc(&device_data, data_size);
-    cudaMalloc(&device_region, data_size);
+    //Copy data to the device
+    cudaMemcpy(device_data, data, DATA_SIZE_BYTES, cudaMemcpyHostToDevice);
+    cudaMemcpy(device_region, region, DATA_SIZE_BYTES, cudaMemcpyHostToDevice);
 
-    cudaMemcpy(device_data, data, data_size, cudaMemcpyHostToDevice);
-    cudaMemcpy(device_region, region, data_size, cudaMemcpyHostToDevice);
-
+    //Run the kernel
     raycast_kernel<<<IMAGE_DIM, IMAGE_DIM>>>(device_data, device_image, device_region);  
 
-    unsigned char* host_image = (unsigned char*)malloc(sizeof(unsigned char)*IMAGE_DIM*IMAGE_DIM);
+    //Allocate memory for the result
+    unsigned char* host_image = (unsigned char*)malloc(IMAGE_SIZE_BYTES);
 
-    cudaMemcpy(host_image, device_image, image_size, cudaMemcpyDeviceToHost);
+    //Copy result from device
+    cudaMemcpy(host_image, device_image, IMAGE_SIZE_BYTES, cudaMemcpyDeviceToHost);
+    
+    //Free device memory
+    cudaFree(device_region);
+    cudaFree(device_data);
+    cudaFree(device_image);
     return host_image;
 }
 
 
 unsigned char* raycast_gpu_texture(unsigned char* data, unsigned char* region){
-
-    data_texture.filterMode = cudaFilterModeLinear;
-
+    data_texture.filterMode = cudaFilterModeLinear; //Interpolate the data texture
+    
     cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc(8,0,0,0,cudaChannelFormatKindUnsigned);
-    cudaExtent extent = make_cudaExtent(IMAGE_DIM, IMAGE_DIM, IMAGE_DIM);
+    cudaExtent extent = make_cudaExtent(DATA_DIM, DATA_DIM, DATA_DIM);
+
+    //Allocate arrays
     cudaArray* data_array;
     cudaArray* region_array;
-
     cudaMalloc3DArray(&region_array, &channelDesc, extent, 0);
     cudaMalloc3DArray(&data_array, &channelDesc, extent, 0);
-
-    cudaMemcpy3DParms copyParams2 = {0};
-    copyParams2.srcPtr   = make_cudaPitchedPtr(region, sizeof(char) * IMAGE_DIM, IMAGE_DIM, IMAGE_DIM);
-    copyParams2.dstArray = region_array;
-    copyParams2.extent   = extent;
-    copyParams2.kind     = cudaMemcpyHostToDevice;
-    cudaMemcpy3D(&copyParams2);
-
+    
+    //Copy data to region array
     cudaMemcpy3DParms copyParams = {0};
+    copyParams.srcPtr   = make_cudaPitchedPtr(region, sizeof(char) * IMAGE_DIM, IMAGE_DIM, IMAGE_DIM);
+    copyParams.dstArray = region_array;
+    copyParams.extent   = extent;
+    copyParams.kind     = cudaMemcpyHostToDevice;
+    cudaMemcpy3D(&copyParams);
+
+    //Copy data to data array
     copyParams.srcPtr   = make_cudaPitchedPtr(data, sizeof(char) * IMAGE_DIM, IMAGE_DIM, IMAGE_DIM);
     copyParams.dstArray = data_array;
     copyParams.extent   = extent;
     copyParams.kind     = cudaMemcpyHostToDevice;
     cudaMemcpy3D(&copyParams);
 
+    //Bind arrays to the textures
     cudaBindTextureToArray(data_texture, data_array);
     cudaBindTextureToArray(region_texture, region_array);
 
+    //Allocate memory for the result on the device
     unsigned char* device_image;
-
-    int image_size = sizeof(unsigned char) * IMAGE_DIM * IMAGE_DIM;
-
-    cudaMalloc(&device_image, image_size); 
+    cudaMalloc(&device_image, IMAGE_SIZE_BYTES); 
 
     raycast_kernel_texture<<<IMAGE_DIM, IMAGE_DIM>>>(device_image);  
 
-
+    //Allocate memory to retrieve the result
     unsigned char* host_image = (unsigned char*)malloc(sizeof(unsigned char)*IMAGE_DIM*IMAGE_DIM);
-    cudaMemcpy(host_image, device_image, image_size, cudaMemcpyDeviceToHost);
 
-//   cudaFree(data_array);
-//   cudaFree(region_array);
-//   cudaFree(device_image);
+    //Fetch the result
+    cudaMemcpy(host_image, device_image, IMAGE_SIZE_BYTES, cudaMemcpyDeviceToHost);
 
-
+    //Unbind textures
+    cudaUnbindTexture(data_texture);
+    cudaUnbindTexture(region_texture);
+    
+    //Free memory on the device
+    cudaFreeArray(data_array);
+    cudaFreeArray(region_array);
+    cudaFree(device_image);
 
     return host_image;
 }
@@ -540,7 +552,6 @@ __device__ bool is_border(int3 pixel, int dim){
 }
 
 __global__ void region_grow_kernel_shared(unsigned char* data, unsigned char* region, int* unfinished){
-
     int local_region_dim = blockDim.x; //We use the knowledge that in this problem dim_x = dim_y = dim_z
 
     extern __shared__ char local_region[];
@@ -616,7 +627,6 @@ __global__ void region_grow_kernel_shared(unsigned char* data, unsigned char* re
     }else{
         region[global_index] = local_region[local_index];
     }
-
 }
 
 unsigned char* grow_region_gpu(unsigned char* host_data){
@@ -739,7 +749,6 @@ unsigned char* grow_region_gpu_shared(unsigned char* host_data){
 
 
 int main(int argc, char** argv){
-
     struct timeval start, end;
 
     print_properties();
