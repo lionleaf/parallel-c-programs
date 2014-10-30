@@ -18,7 +18,7 @@
 #define IMAGE_SIZE_BYTES (sizeof(unsigned char) * IMAGE_SIZE)
 
 texture<char, cudaTextureType3D, cudaReadModeNormalizedFloat> data_texture;
-texture<char, cudaTextureType3D, cudaReadModeElementType> region_texture;
+texture<char, cudaTextureType3D, cudaReadModeNormalizedFloat> region_texture;
 
 void print_time(struct timeval start, struct timeval end){
     long int ms = ((end.tv_sec * 1000000 + end.tv_usec) - (start.tv_sec * 1000000 + start.tv_usec));
@@ -399,7 +399,9 @@ __global__ void raycast_kernel_texture(unsigned char* image){
     while(color < 255 && i < 5000){
         i++;
         pos = add(pos, scale(ray, step_size));          // Update position
-        int r = tex3D(region_texture, pos.x, pos.y, pos.z);    // Look up value from texture
+
+        //Note that the texture is set to interpolate automatically
+        int r = 255 * tex3D(region_texture, pos.x, pos.y, pos.z);    // Look up value from texture
         if(inside(pos)){
             color += 255 * tex3D(data_texture, pos.x, pos.y, pos.z)*(0.01 + r) ;       // Update the color based on data value, and if we're in the region
         }
@@ -443,7 +445,9 @@ unsigned char* raycast_gpu(unsigned char* data, unsigned char* region){
 
 
 unsigned char* raycast_gpu_texture(unsigned char* data, unsigned char* region){
-    data_texture.filterMode = cudaFilterModeLinear; //Interpolate the data texture
+    //We let the texture interpolate automatically
+    data_texture.filterMode = cudaFilterModeLinear; 
+    region_texture.filterMode = cudaFilterModeLinear; 
 
     cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc(8,0,0,0,cudaChannelFormatKindUnsigned);
     cudaExtent extent = make_cudaExtent(DATA_DIM, DATA_DIM, DATA_DIM);
@@ -551,111 +555,141 @@ __device__ bool is_border(int3 voxel, int dim){
     return false;
 }
 
-__global__ void region_grow_kernel_shared(unsigned char* data, unsigned char* region, int* unfinished){
-    int local_region_dim = blockDim.x; //We use the knowledge that in this problem dim_x = dim_y = dim_z
 
-    extern __shared__ char local_region[];
+
+__global__ void region_grow_kernel_shared(unsigned char* data, unsigned char* region_global, int* unfinished){
+
+    //Shared array within the block. The border of this 3D cube overlaps with other blocks
+    extern __shared__ unsigned char region_local[];
     __shared__ bool block_done;
 
+    //Index of this voxel within shared data region_local
+    int3 voxel_local;
+    voxel_local.x = threadIdx.x;
+    voxel_local.y = threadIdx.y;
+    voxel_local.z = threadIdx.z;
 
-    int3 local_voxel = {.x = threadIdx.x  
-        ,.y = threadIdx.y
-            ,.z = threadIdx.z
-    };
+    //Index of this voxel in the region_local
+    int index_local 
+        = voxel_local.z * blockDim.y * blockDim.x 
+        + voxel_local.y * blockDim.x
+        + voxel_local.x;
 
-    int local_index = (local_voxel.z * local_region_dim * local_region_dim) + (local_voxel.y * local_region_dim) + local_voxel.x;
+    //Global coordinates of this voxel
+    int3 voxel_global; 
+    voxel_global.x = blockIdx.x * (blockDim.x - 2) + threadIdx.x - 1;
+    voxel_global.y = blockIdx.y * (blockDim.y - 2) + threadIdx.y - 1; 
+    voxel_global.z = blockIdx.z * (blockDim.z - 2) + threadIdx.z - 1; 
 
-    int3 global_voxel = {.x = blockIdx.x * (blockDim.x - 2) + threadIdx.x - 1 
-        ,.y = blockIdx.y * (blockDim.y - 2) + threadIdx.y - 1 
-            ,.z = blockIdx.z * (blockDim.z - 2) + threadIdx.z - 1 
-    };
+    //Index of this voxel in region_global 
+    int index_global = index(voxel_global.z, voxel_global.y, voxel_global.x);
 
-    int global_index = (global_voxel.z * DATA_DIM * DATA_DIM) + (global_voxel.y * DATA_DIM) + global_voxel.x;
+    /*
+       Some of our threads will be out of bounds of the global array.
+       However, we can not simply return as in the other region grow kernel,
+       because we are using __syncthreads(), which might deadlock if some
+       threads have returned.
 
-    if(global_index >= DATA_DIM * DATA_DIM * DATA_DIM){
-        return;
+       Incidentally it did not deadlock with returns here instead, but that might be
+       because some GPUs, but not all, keep a counter of live threads in a
+       block and use it for synchronization instead of the initial count.
+       Also, the barrier count is incremented with 32 each time a warp reaches the
+       __syncthreads, so if the returning threads does not reduce the number of 
+       warps, it would also not deadlock.
+
+       Anyway, returning and then using __syncthreads is a bad, bad idea.
+   */
+    if(index_global < DATA_SIZE || index_global >= 0){
+        //Copy global data into the shared block. Each thread copies one value
+        region_local[index_local] = region_global[index_global];
     }
-    if(global_index < 0){
-        return;
-    }
 
-    local_region[local_index] = region[global_index];
+
     do{
         block_done = true;
+
+        //Sync threads here to make sure both data copy and block_done = true is completed
         __syncthreads();
 
-        if(local_region[local_index] == 2 && !is_border(local_voxel, local_region_dim)){
-            local_region[local_index] = 1;
+        //Important not to grow 2s on the border, as they can't reach all neighbours
+        if(region_local[index_local] == 2 && !is_border(voxel_local, blockDim.x)){
+            region_local[index_local] = 1;
 
             int dx[6] = {-1,1,0,0,0,0};
             int dy[6] = {0,0,-1,1,0,0};
             int dz[6] = {0,0,0,0,-1,1};
 
             for(int n = 0; n < 6; n++){
-                int3 candidate;
-                candidate.x = local_voxel.x + dx[n];
-                candidate.y = local_voxel.y + dy[n];
-                candidate.z = local_voxel.z + dz[n];
+                int3 candidate_local;
+                candidate_local.x = voxel_local.x + dx[n];
+                candidate_local.y = voxel_local.y + dy[n];
+                candidate_local.z = voxel_local.z + dz[n];
 
-                int3 global_candidate;
-                global_candidate.x = global_voxel.x + dx[n];
-                global_candidate.y = global_voxel.y + dy[n];
-                global_candidate.z = global_voxel.z + dz[n];
+                int3 candidate_global;
+                candidate_global.x = voxel_global.x + dx[n];
+                candidate_global.y = voxel_global.y + dy[n];
+                candidate_global.z = voxel_global.z + dz[n];
 
-                int candidate_local_index = (candidate.z * local_region_dim * local_region_dim) 
-                    + (candidate.y * local_region_dim)
-                    + candidate.x;
+                int candidate_index_local 
+                    = candidate_local.z * blockDim.y * blockDim.x 
+                    + candidate_local.y * blockDim.x 
+                    + candidate_local.x;
 
-                if(local_region[candidate_local_index] != 0){
+                if(region_local[candidate_index_local] != 0){
                     continue;
                 }
 
-                if(similar(data, global_voxel, global_candidate)){
-                    local_region[candidate_local_index] = 2;
+                if(similar(data, voxel_global, candidate_global)){
+                    region_local[candidate_index_local] = 2;
                     block_done = false;
                     *unfinished = 1;
                 }
             }
         }
+        //We need to sync threads before we check block_done
         __syncthreads();
     }while(!block_done);
 
-    __syncthreads();
-    if(is_border(local_voxel, local_region_dim)){
-        if(local_region[local_index] == 2){ //Only copy the 2s from the border
-            region[global_index] = 2;
+    if(index_global >= DATA_SIZE || index_global < 0){
+        return; //There are no more __syncthreads, so it's safe to return
+    }
+
+    if(is_border(voxel_local, blockDim.x)){
+        if(region_local[index_local] == 2){ //Only copy the 2s from the border
+            region_global[index_global] = 2;
         }
     }else{
-        if(local_region[local_index] == 1){
-            region[global_index] = 1;
+        //We want to avoid overriding 2s with 0, so only write 1s
+        if(region_local[index_local] == 1){
+            region_global[index_global] = 1;
         }
     }
 }
 
 unsigned char* grow_region_gpu(unsigned char* host_data){
-    int region_size = sizeof(unsigned char) * DATA_DIM*DATA_DIM*DATA_DIM;
-    int data_size = region_size;
+    //Host variables
+    unsigned char* host_region = (unsigned char*)calloc(sizeof(unsigned char), DATA_SIZE);
+    int            host_unfinished;
 
-    unsigned char* host_region = (unsigned char*)calloc(sizeof(unsigned char), DATA_DIM*DATA_DIM*DATA_DIM);
-
-    int*            host_unfinished = (int*) calloc(sizeof(int), 1);
-
+    //Device variables
     unsigned char*  device_region;
     unsigned char*  device_data;
     int*            device_unfinished;
 
-    cudaMalloc(&device_region, region_size);
-    cudaMalloc(&device_data, data_size);
-    cudaMalloc(&device_unfinished, 1);
+    //Allocate device memory
+    cudaMalloc(&device_region, DATA_SIZE_BYTES);
+    cudaMalloc(&device_data, DATA_SIZE_BYTES);
+    cudaMalloc(&device_unfinished, sizeof(int));
 
     //plant seed
     int3 seed = {.x=50, .y=300, .z=300};
-    host_region[seed.z *DATA_DIM*DATA_DIM + seed.y*DATA_DIM + seed.x] = 2;
+    host_region[index(seed.z, seed.y, seed.x)] = 2;
 
-    cudaMemcpy(device_region, host_region, region_size, cudaMemcpyHostToDevice);
-    cudaMemcpy(device_data, host_data, data_size, cudaMemcpyHostToDevice);
+    //Copy data to device
+    cudaMemcpy(device_region, host_region, DATA_SIZE_BYTES, cudaMemcpyHostToDevice);
+    cudaMemcpy(device_data, host_data, DATA_SIZE_BYTES, cudaMemcpyHostToDevice);
 
-
+    //Calculate block and grid sizes
     dim3 block_size;
     block_size.x = 7;
     block_size.y = 7;
@@ -665,22 +699,22 @@ unsigned char* grow_region_gpu(unsigned char* host_data){
     grid_size.x = DATA_DIM / block_size.x + 1; // Add 1 to round up instead of down.
     grid_size.y = DATA_DIM / block_size.y + 1;
     grid_size.z = DATA_DIM / block_size.z + 1;
-    int i = 0;
 
-    printf("Getting ready to start that loop \n");
-
+    //Run kernel untill completion
     do{
-        i++;
-        *host_unfinished = 0;
-        cudaMemcpy(device_unfinished, host_unfinished, 1, cudaMemcpyHostToDevice);
+        host_unfinished = 0;
+        cudaMemcpy(device_unfinished, &host_unfinished, 1, cudaMemcpyHostToDevice);
+
         region_grow_kernel<<<grid_size, block_size>>>(device_data, device_region, device_unfinished);
-        cudaMemcpy(host_unfinished, device_unfinished, 1, cudaMemcpyDeviceToHost);
-    }while(*host_unfinished);
 
-    printf("Ran %d iterations\n",i);
+        cudaMemcpy(&host_unfinished, device_unfinished, 1, cudaMemcpyDeviceToHost);
 
-    cudaMemcpy(host_region, device_region, region_size, cudaMemcpyDeviceToHost);
+    }while(host_unfinished);
 
+    //Copy result to host
+    cudaMemcpy(host_region, device_region, DATA_SIZE_BYTES, cudaMemcpyDeviceToHost);
+
+    //Free device memory
     cudaFree(device_region);
     cudaFree(device_data);
     cudaFree(device_unfinished);
@@ -749,12 +783,10 @@ unsigned char* grow_region_gpu_shared(unsigned char* host_data){
     return host_region;
 }
 
-
 int main(int argc, char** argv){
     struct timeval start, end;
 
     print_properties();
-
 
     gettimeofday(&start, NULL);
     unsigned char* data = create_data();
@@ -763,7 +795,7 @@ int main(int argc, char** argv){
     print_time(start, end);
 
     gettimeofday(&start, NULL);
-    unsigned char* region = grow_region_gpu_shared(data);
+    unsigned char* region = grow_region_gpu(data);
     gettimeofday(&end, NULL);
     printf("Grow time:\n");
     print_time(start, end);
