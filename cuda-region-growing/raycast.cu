@@ -573,7 +573,7 @@ __global__ void region_grow_kernel(unsigned char* data, unsigned char* region, i
     }
 }
 
-__device__ bool is_border(int3 voxel, int dim){
+__device__ bool is_halo(int3 voxel, int dim){
 
     if( voxel.x == 0 || voxel.y == 0 || voxel.z == 0){
         return true;
@@ -588,7 +588,7 @@ __device__ bool is_border(int3 voxel, int dim){
 
 __global__ void region_grow_kernel_shared(unsigned char* data, unsigned char* region_global, int* unfinished){
     
-    //Shared array within the block. The border of this 3D cube overlaps with other blocks
+    //Shared array within the block. The halo of this 3D cube overlaps with other blocks
     extern __shared__ unsigned char region_local[];
     __shared__ bool block_done;
 
@@ -639,10 +639,10 @@ __global__ void region_grow_kernel_shared(unsigned char* data, unsigned char* re
         //Sync threads here to make sure both data copy and block_done = true is completed
         __syncthreads();
 
-        //Important not to grow 2s on the border, as they can't reach all neighbours
+        //Important not to grow 2s on the halo, as they can't reach all neighbours
         //We also don't execute this for pixels outside the global volume
         if(region_local[index_local] == 2 
-                && !is_border(voxel_local, blockDim.x)
+                && !is_halo(voxel_local, blockDim.x)
                 && inside(voxel_global)){
 
             region_local[index_local] = 1;
@@ -686,8 +686,8 @@ __global__ void region_grow_kernel_shared(unsigned char* data, unsigned char* re
         return; //There are no more __syncthreads, so it's safe to return
     }
 
-    if(is_border(voxel_local, blockDim.x)){
-        if(region_local[index_local] == 2){ //Only copy the 2s from the border
+    if(is_halo(voxel_local, blockDim.x)){
+        if(region_local[index_local] == 2){ //Only copy the 2s from the halo
             region_global[index_global] = 2;
         }
     }else{
@@ -780,9 +780,9 @@ unsigned char* grow_region_gpu_shared(unsigned char* host_data){
     cudaMemcpy(device_data, host_data, DATA_SIZE_BYTES, cudaMemcpyHostToDevice);
 
     /* 
-       Block size here is padded by 2 to enable overlapping border.
+       Block size here is padded by 2 to enable overlapping halo.
        So if the block_size is 9x9x9, it is a 7x7x7 block with an overlapping
-       border wrapping it.
+       halo wrapping it.
      */
     dim3 block_size;
     block_size.x = 10;
@@ -790,7 +790,7 @@ unsigned char* grow_region_gpu_shared(unsigned char* host_data){
     block_size.z = 10;
 
     /*
-       Grid size is calculated without the borders, hence -2.
+       Grid size is calculated without the halos, hence -2.
      */
     dim3 grid_size;
     grid_size.x = DATA_DIM / (block_size.x - 2) + 1; 
