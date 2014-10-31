@@ -338,8 +338,16 @@ __global__ void raycast_kernel(unsigned char* data, unsigned char* image, unsign
     float pixel_width = tan(fov/2.0)/(IMAGE_DIM/2);
     float step_size = 0.5;
 
-    int x = blockIdx.x - (IMAGE_DIM/2);
-    int y = threadIdx.x - (IMAGE_DIM/2);
+    int blocks_per_row = IMAGE_DIM/blockDim.x;
+
+    int x 
+        = (blockIdx.x % blocks_per_row) * blockDim.x 
+        + threadIdx.x 
+        - (IMAGE_DIM/2);
+
+    int y 
+        = blockIdx.x/blocks_per_row  
+        - (IMAGE_DIM/2);
 
     // Find the ray for this pixel
     float3 screen_center = add(camera, forward);
@@ -383,9 +391,21 @@ __global__ void raycast_kernel_texture(unsigned char* image){
     float pixel_width = tan(fov/2.0)/(IMAGE_DIM/2);
     float step_size = 0.5;
 
-    int x = blockIdx.x - (IMAGE_DIM/2);
-    int y = threadIdx.x - (IMAGE_DIM/2);
+    //Calculate x and y.
+    int blocks_per_row = IMAGE_DIM/blockDim.x;
+    int x 
+        = (blockIdx.x % blocks_per_row) * blockDim.x 
+        + threadIdx.x 
+        - (IMAGE_DIM/2);
 
+    int y 
+        = blockIdx.x/blocks_per_row  
+        - (IMAGE_DIM/2);
+
+    if(x >= 512 || y >= 512){
+        return;
+    }
+    
     // Find the ray for this pixel
     float3 screen_center = add(camera, forward);
     float3 ray = add(add(screen_center, scale(right, x*pixel_width)), scale(up, y*pixel_width));
@@ -428,8 +448,12 @@ unsigned char* raycast_gpu(unsigned char* data, unsigned char* region){
     cudaMemcpy(device_data, data, DATA_SIZE_BYTES, cudaMemcpyHostToDevice);
     cudaMemcpy(device_region, region, DATA_SIZE_BYTES, cudaMemcpyHostToDevice);
 
+    int blocks_per_row = 64; //Must divide IMAGE_DIM. Can max be 64
+    int grid_size = IMAGE_DIM * blocks_per_row;
+    int block_size = IMAGE_DIM / blocks_per_row;
+
     //Run the kernel
-    raycast_kernel<<<IMAGE_DIM, IMAGE_DIM>>>(device_data, device_image, device_region);  
+    raycast_kernel<<<grid_size, block_size>>>(device_data, device_image, device_region);  
 
     //Allocate memory for the result
     unsigned char* host_image = (unsigned char*)malloc(IMAGE_SIZE_BYTES);
@@ -483,7 +507,10 @@ unsigned char* raycast_gpu_texture(unsigned char* data, unsigned char* region){
     unsigned char* device_image;
     cudaMalloc(&device_image, IMAGE_SIZE_BYTES); 
 
-    raycast_kernel_texture<<<IMAGE_DIM, IMAGE_DIM>>>(device_image);  
+    int blocks_per_row = 1; //Must divide IMAGE_DIM. Can max be 64
+    int grid_size = IMAGE_DIM * blocks_per_row;
+    int block_size = IMAGE_DIM / blocks_per_row;
+    raycast_kernel_texture<<<grid_size, block_size>>>(device_image);  
 
     //Allocate memory to retrieve the result
     unsigned char* host_image = (unsigned char*)malloc(sizeof(unsigned char)*IMAGE_DIM*IMAGE_DIM);
@@ -706,8 +733,10 @@ unsigned char* grow_region_gpu(unsigned char* host_data){
     grid_size.y = DATA_DIM / block_size.y + 1;
     grid_size.z = DATA_DIM / block_size.z + 1;
 
+    int i = 0;
     //Run kernel untill completion
     do{
+        i++;
         host_unfinished = 0;
         cudaMemcpy(device_unfinished, &host_unfinished, 1, cudaMemcpyHostToDevice);
 
@@ -717,6 +746,7 @@ unsigned char* grow_region_gpu(unsigned char* host_data){
 
     }while(host_unfinished);
 
+    printf("%d\n",i);
     //Copy result to host
     cudaMemcpy(host_region, device_region, DATA_SIZE_BYTES, cudaMemcpyDeviceToHost);
 
@@ -799,32 +829,29 @@ int main(int argc, char** argv){
 
     print_properties();
 
-    gettimeofday(&start, NULL);
     unsigned char* data = create_data();
-    printf("\nCreate data time:\n");
-    gettimeofday(&end, NULL);
-    print_time(start, end);
 
+    /*-------REGION GROWING--------*/
     gettimeofday(&start, NULL);
-    unsigned char* region = grow_region_gpu_shared(data);
+    unsigned char* region = grow_region_serial(data);
     gettimeofday(&end, NULL);
     printf("\nGrow time:\n");
     print_time(start, end);
     printf("Errors: %s\n", cudaGetErrorString(cudaGetLastError()));
 
+
+    /*-------RAY CASTING --------*/
     gettimeofday(&start, NULL);
-    unsigned char* image = raycast_gpu_texture(data, region);
+    unsigned char* image = raycast_gpu(data, region);
     gettimeofday(&end, NULL);
     printf("\nRaycast time: \n");
     print_time(start, end);
     printf("Errors: %s\n", cudaGetErrorString(cudaGetLastError()));
 
+
+    write_bmp(image, IMAGE_DIM, IMAGE_DIM);
+
     free(data);
     free(region);
-
-    gettimeofday(&start, NULL);
-    write_bmp(image, IMAGE_DIM, IMAGE_DIM);
-    gettimeofday(&end, NULL);
-    printf("\nbmp time: \n");
-    print_time(start, end);
+    free(image);
 }
