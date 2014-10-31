@@ -334,8 +334,8 @@ __global__ void raycast_kernel(unsigned char* data, unsigned char* image, unsign
     right = normalize(right);
     up = normalize(up);
 
-    float fov = 3.14/4;
-    float pixel_width = tan(fov/2.0)/(IMAGE_DIM/2);
+    float fov = float(3.14)/4;
+    float pixel_width = tan(fov/float(2.0))/(IMAGE_DIM/2);
     float step_size = 0.5;
 
     int blocks_per_row = IMAGE_DIM/blockDim.x;
@@ -363,7 +363,7 @@ __global__ void raycast_kernel(unsigned char* data, unsigned char* image, unsign
         i++;
         pos = add(pos, scale(ray, step_size));          // Update position
         int r = value_at(pos, region);                  // Check if we're in the region
-        color += value_at(pos, data)*(0.01 + r) ;       // Update the color based on data value, and if we're in the region
+        color += value_at(pos, data)*(float(0.01) + r) ;       // Update the color based on data value, and if we're in the region
     }
 
     // Write final color to image
@@ -387,8 +387,8 @@ __global__ void raycast_kernel_texture(unsigned char* image){
     right = normalize(right);
     up = normalize(up);
 
-    float fov = 3.14/4;
-    float pixel_width = tan(fov/2.0)/(IMAGE_DIM/2);
+    float fov = float(3.14)/4;
+    float pixel_width = tan(fov/float(2.0))/(IMAGE_DIM/2);
     float step_size = 0.5;
 
     //Calculate x and y.
@@ -423,7 +423,7 @@ __global__ void raycast_kernel_texture(unsigned char* image){
         //Note that the texture is set to interpolate automatically
         int r = 255 * tex3D(region_texture, pos.x, pos.y, pos.z);    // Look up value from texture
         if(inside(pos)){
-            color += 255 * tex3D(data_texture, pos.x, pos.y, pos.z)*(0.01 + r) ;       // Update the color based on data value, and if we're in the region
+            color += 255 * tex3D(data_texture, pos.x, pos.y, pos.z)*(float(0.01) + r) ;       // Update the color based on data value, and if we're in the region
         }
     }
 
@@ -733,10 +733,8 @@ unsigned char* grow_region_gpu(unsigned char* host_data){
     grid_size.y = DATA_DIM / block_size.y + 1;
     grid_size.z = DATA_DIM / block_size.z + 1;
 
-    int i = 0;
     //Run kernel untill completion
     do{
-        i++;
         host_unfinished = 0;
         cudaMemcpy(device_unfinished, &host_unfinished, 1, cudaMemcpyHostToDevice);
 
@@ -746,7 +744,6 @@ unsigned char* grow_region_gpu(unsigned char* host_data){
 
     }while(host_unfinished);
 
-    printf("%d\n",i);
     //Copy result to host
     cudaMemcpy(host_region, device_region, DATA_SIZE_BYTES, cudaMemcpyDeviceToHost);
 
@@ -788,9 +785,9 @@ unsigned char* grow_region_gpu_shared(unsigned char* host_data){
        border wrapping it.
      */
     dim3 block_size;
-    block_size.x = 9;
-    block_size.y = 9;
-    block_size.z = 9;
+    block_size.x = 10;
+    block_size.y = 10;
+    block_size.z = 10;
 
     /*
        Grid size is calculated without the borders, hence -2.
@@ -833,7 +830,7 @@ int main(int argc, char** argv){
 
     /*-------REGION GROWING--------*/
     gettimeofday(&start, NULL);
-    unsigned char* region = grow_region_serial(data);
+    unsigned char* region = grow_region_gpu_shared(data);
     gettimeofday(&end, NULL);
     printf("\nGrow time:\n");
     print_time(start, end);
@@ -842,7 +839,7 @@ int main(int argc, char** argv){
 
     /*-------RAY CASTING --------*/
     gettimeofday(&start, NULL);
-    unsigned char* image = raycast_gpu(data, region);
+    unsigned char* image = raycast_gpu_texture(data, region);
     gettimeofday(&end, NULL);
     printf("\nRaycast time: \n");
     print_time(start, end);
