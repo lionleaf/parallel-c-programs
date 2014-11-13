@@ -306,14 +306,39 @@ unsigned char* grow_region_serial(unsigned char* data){
 }
 
 void grow_region_gpu(unsigned char* data){
-/*    //Host variables
+/*    cl_platform_id platform;
+    cl_device_id device;
+    cl_context context;
+    cl_command_queue queue;
+    cl_kernel kernel;
+    cl_int err;
+    char *source;
+    int i;
+    
+    clGetPlatformIDs(1, &platform, NULL);
+    clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL);
+    context = clCreateContext(NULL, 1, &device, NULL, NULL, &err);
+    
+    printPlatformInfo(platform);
+
+
+    //Host variables
     unsigned char* host_region = (unsigned char*)calloc(sizeof(unsigned char), DATA_SIZE);
     int            host_unfinished;
 
+    cl_mem device_region     = clCreateBuffer(context, CL_MEM_READ_ONLY, DATA_SIZE * sizeof(cl_uchar*) ,NULL,&err);
+    cl_mem device_data       = clCreateBuffer(context, CL_MEM_READ_ONLY, DATA_SIZE * sizeof(cl_uchar*), NULL,&err);
+    cl_mem device_unfinished = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(bool*),NULL,&err);
+    clError("Error allocating memory", err);
+
+    //Copy data to the device
+    clEnqueueWriteBuffer(queue, device_data  , CL_FALSE, 0, DATA_SIZE * sizeof(cl_uchar*), data  , 0, NULL, NULL);
+    clEnqueueWriteBuffer(queue, device_region, CL_FALSE, 0, DATA_SIZE * sizeof(cl_uchar*), region, 0, NULL, NULL);
+
     //Device variables
-    unsigned char*  device_region;
-    unsigned char*  device_data;
-    int*            device_unfinished;
+    unsigned char*  
+    unsigned char*  
+    int*            
 
     //Allocate device memory
     cudaMalloc(&device_region, DATA_SIZE_BYTES);
@@ -362,7 +387,6 @@ void grow_region_gpu(unsigned char* data){
 }
 
 unsigned char* raycast_gpu(unsigned char* data, unsigned char* region){
-    printf("00\n");
     cl_platform_id platform;
     cl_device_id device;
     cl_context context;
@@ -375,22 +399,21 @@ unsigned char* raycast_gpu(unsigned char* data, unsigned char* region){
     clGetPlatformIDs(1, &platform, NULL);
     clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL);
     context = clCreateContext(NULL, 1, &device, NULL, NULL, &err);
-    
-    printPlatformInfo(platform);
-    printf("01\n");
-    cl_mem device_region = clCreateBuffer(context, CL_MEM_READ_ONLY, DATA_SIZE * sizeof(cl_uchar*) ,NULL,&err);
-    printf("02\n");
-    cl_mem device_data   = clCreateBuffer(context, CL_MEM_READ_ONLY, DATA_SIZE * sizeof(cl_uchar*), NULL,&err);
-    printf("03\n");
-    cl_mem device_image  = clCreateBuffer(context, CL_MEM_READ_ONLY, IMAGE_SIZE * sizeof(cl_uchar*),NULL,&err);
-    printf("04\n");
-    clError("Error allocating memory", err);
 
+    printPlatformInfo(platform);
+    printDeviceInfo(device);
+
+    queue = clCreateCommandQueue(context, device, 0, &err);
+    kernel = buildKernel("raycast.cl", "raycast", NULL, context, device);
+
+
+    cl_mem device_region = clCreateBuffer(context, CL_MEM_READ_ONLY, DATA_SIZE * sizeof(cl_uchar) ,NULL,&err);
+    cl_mem device_data   = clCreateBuffer(context, CL_MEM_READ_ONLY, DATA_SIZE * sizeof(cl_uchar), NULL,&err);
+    cl_mem device_image  = clCreateBuffer(context, CL_MEM_READ_WRITE, IMAGE_SIZE * sizeof(cl_uchar),NULL,&err);
+    clError("Error allocating memory", err);
     //Copy data to the device
-    clEnqueueWriteBuffer(queue, device_data  , CL_FALSE, 0, DATA_SIZE * sizeof(cl_uchar*), data  , 0, NULL, NULL);
-    printf("05\n");
-    clEnqueueWriteBuffer(queue, device_region, CL_FALSE, 0, DATA_SIZE * sizeof(cl_uchar*), region, 0, NULL, NULL);
-    printf("06\n");
+    clEnqueueWriteBuffer(queue, device_data  , CL_FALSE, 0, DATA_SIZE * sizeof(cl_uchar), data  , 0, NULL, NULL);
+    clEnqueueWriteBuffer(queue, device_region, CL_FALSE, 0, DATA_SIZE * sizeof(cl_uchar), region, 0, NULL, NULL);
 
     int grid_size = IMAGE_DIM;
     int block_size = IMAGE_DIM;
@@ -398,9 +421,7 @@ unsigned char* raycast_gpu(unsigned char* data, unsigned char* region){
 
     //Set up kernel arguments
     err = clSetKernelArg(kernel, 0, sizeof(device_data), (void*)&device_data);
-    printf("07\n");
     err = clSetKernelArg(kernel, 1, sizeof(device_region), (void*)&device_region);
-    printf("08\n");
     err = clSetKernelArg(kernel, 2, sizeof(device_image), (void*)&device_image);
     clError("Error setting arguments", err);
 
@@ -415,7 +436,7 @@ unsigned char* raycast_gpu(unsigned char* data, unsigned char* region){
     unsigned char* host_image = (unsigned char*)malloc(IMAGE_SIZE_BYTES);
 
     //Copy result from device
-    err = clEnqueueReadBuffer(queue, device_image, CL_TRUE, 0, IMAGE_SIZE_BYTES, host_image, 0, NULL, NULL);
+    err = clEnqueueReadBuffer(queue, device_image, CL_TRUE, 0, IMAGE_SIZE * sizeof(cl_uchar), host_image, 0, NULL, NULL);
     clFinish(queue);
 
 
