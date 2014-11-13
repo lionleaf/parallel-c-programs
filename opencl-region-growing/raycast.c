@@ -5,11 +5,17 @@
 #include <CL/cl.h>
 
 #include "bmp.h"
+#include "clutil.h"
 
 // data is 3D, total size is DATA_DIM x DATA_DIM x DATA_DIM
 #define DATA_DIM 512
+#define DATA_SIZE (DATA_DIM * DATA_DIM * DATA_DIM) 
+#define DATA_SIZE_BYTES (sizeof(unsigned char) * DATA_SIZE)
+
 // image is 2D, total size is IMAGE_DIM x IMAGE_DIM
 #define IMAGE_DIM 64
+#define IMAGE_SIZE (IMAGE_DIM * IMAGE_DIM)
+#define IMAGE_SIZE_BYTES (sizeof(unsigned char) * IMAGE_SIZE)
 
 typedef struct{
     float x;
@@ -300,10 +306,115 @@ unsigned char* grow_region_serial(unsigned char* data){
 }
 
 void grow_region_gpu(unsigned char* data){
+/*    //Host variables
+    unsigned char* host_region = (unsigned char*)calloc(sizeof(unsigned char), DATA_SIZE);
+    int            host_unfinished;
+
+    //Device variables
+    unsigned char*  device_region;
+    unsigned char*  device_data;
+    int*            device_unfinished;
+
+    //Allocate device memory
+    cudaMalloc(&device_region, DATA_SIZE_BYTES);
+    cudaMalloc(&device_data, DATA_SIZE_BYTES);
+    cudaMalloc(&device_unfinished, sizeof(int));
+
+    //plant seed
+    int3 seed = {.x=50, .y=300, .z=300};
+    host_region[index(seed.z, seed.y, seed.x)] = 2;
+
+    //Copy data to device
+    cudaMemcpy(device_region, host_region, DATA_SIZE_BYTES, cudaMemcpyHostToDevice);
+    cudaMemcpy(device_data, host_data, DATA_SIZE_BYTES, cudaMemcpyHostToDevice);
+
+    //Calculate block and grid sizes
+    dim3 block_size;
+    block_size.x = 7;
+    block_size.y = 7;
+    block_size.z = 7;
+
+    dim3 grid_size;
+    grid_size.x = DATA_DIM / block_size.x + 1; // Add 1 to round up instead of down.
+    grid_size.y = DATA_DIM / block_size.y + 1;
+    grid_size.z = DATA_DIM / block_size.z + 1;
+
+    //Run kernel untill completion
+    do{
+        host_unfinished = 0;
+        cudaMemcpy(device_unfinished, &host_unfinished, 1, cudaMemcpyHostToDevice);
+
+        region_grow_kernel<<<grid_size, block_size>>>(device_data, device_region, device_unfinished);
+
+        cudaMemcpy(&host_unfinished, device_unfinished, 1, cudaMemcpyDeviceToHost);
+
+    }while(host_unfinished);
+
+    //Copy result to host
+    cudaMemcpy(host_region, device_region, DATA_SIZE_BYTES, cudaMemcpyDeviceToHost);
+
+    //Free device memory
+    cudaFree(device_region);
+    cudaFree(device_data);
+    cudaFree(device_unfinished);
+
+    return host_region;*/
 }
 
 unsigned char* raycast_gpu(unsigned char* data, unsigned char* region){
-    return NULL;
+    cl_platform_id platform;
+    cl_device_id device;
+    cl_context context;
+    cl_command_queue queue;
+    cl_kernel kernel;
+    cl_int err;
+    char *source;
+    int i;
+    
+    clGetPlatformIDs(1, &platform, NULL);
+    clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL);
+    context = clCreateContext(NULL, 1, &device, NULL, NULL, &err);
+    
+    printPlatformInfo(platform);
+    cl_mem device_region = clCreateBuffer(context, CL_MEM_READ_ONLY, DATA_SIZE_BYTES,NULL,&err);
+    cl_mem device_data   = clCreateBuffer(context, CL_MEM_READ_ONLY, DATA_SIZE_BYTES,NULL,&err);
+    cl_mem device_image  = clCreateBuffer(context, CL_MEM_READ_ONLY, IMAGE_SIZE_BYTES,NULL,&err);
+    clError("Error allocating memory", err);
+
+    //Copy data to the device
+    clEnqueueWriteBuffer(queue, device_data, CL_FALSE, 0, DATA_SIZE_BYTES, data, 0, NULL, NULL);
+    clEnqueueWriteBuffer(queue, device_region, CL_FALSE, 0, DATA_SIZE_BYTES, region, 0, NULL, NULL);
+
+    int grid_size = IMAGE_DIM;
+    int block_size = IMAGE_DIM;
+
+
+    //Set up kernel arguments
+    err = clSetKernelArg(kernel, 0, sizeof(device_data), (void*)&device_data);
+    err = clSetKernelArg(kernel, 1, sizeof(device_region), (void*)&device_region);
+    err = clSetKernelArg(kernel, 2, sizeof(device_image), (void*)&device_image);
+    clError("Error setting arguments", err);
+
+    //Run the kernel
+    size_t globalws[2] = {IMAGE_SIZE, IMAGE_SIZE};
+    clEnqueueNDRangeKernel(queue, kernel, 2, NULL, &globalws, NULL, 0, NULL, NULL);
+    
+    clFinish(queue);
+
+
+    //Allocate memory for the result
+    unsigned char* host_image = (unsigned char*)malloc(IMAGE_SIZE_BYTES);
+
+    //Copy result from device
+    err = clEnqueueReadBuffer(queue, device_image, CL_TRUE, 0, IMAGE_SIZE_BYTES, host_image, 0, NULL, NULL);
+    clFinish(queue);
+
+
+    //Free device memory
+//    cudaFree(device_region);
+//    cudaFree(device_data);
+//    cudaFree(device_image);
+    return host_image;
 }
 
 
@@ -313,7 +424,7 @@ int main(int argc, char** argv){
     
     unsigned char* region = grow_region_serial(data);
     
-    unsigned char* image = raycast_serial(data, region);
+    unsigned char* image = raycast_gpu(data, region);
     
     write_bmp(image, IMAGE_DIM, IMAGE_DIM);
 }
