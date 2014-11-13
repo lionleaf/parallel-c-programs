@@ -1,3 +1,4 @@
+
 // data is 3D, total size is DATA_DIM x DATA_DIM x DATA_DIM
 #define DATA_DIM 512
 // image is 2D, total size is IMAGE_DIM x IMAGE_DIM
@@ -23,16 +24,11 @@ __kernel raycast(__global unsigned char* data,__global unsigned char* region,__g
     float pixel_width = tan(fov/float(2.0))/(IMAGE_DIM/2);
     float step_size = 0.5;
 
-    int blocks_per_row = IMAGE_DIM/blockDim.x;
+    int blocks_per_row = IMAGE_DIM;
 
-    int x 
-        = (blockIdx.x % blocks_per_row) * blockDim.x 
-        + threadIdx.x 
-        - (IMAGE_DIM/2);
+    int x = get_group_id() - (IMAGE_DIM/2);
 
-    int y 
-        = blockIdx.x/blocks_per_row  
-        - (IMAGE_DIM/2);
+    int y = get_local_id() - (IMAGE_DIM/2);
 
     // Find the ray for this pixel
     float3 screen_center = add(camera, forward);

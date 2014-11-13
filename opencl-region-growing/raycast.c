@@ -362,6 +362,7 @@ void grow_region_gpu(unsigned char* data){
 }
 
 unsigned char* raycast_gpu(unsigned char* data, unsigned char* region){
+    printf("00\n");
     cl_platform_id platform;
     cl_device_id device;
     cl_context context;
@@ -376,14 +377,20 @@ unsigned char* raycast_gpu(unsigned char* data, unsigned char* region){
     context = clCreateContext(NULL, 1, &device, NULL, NULL, &err);
     
     printPlatformInfo(platform);
-    cl_mem device_region = clCreateBuffer(context, CL_MEM_READ_ONLY, DATA_SIZE_BYTES,NULL,&err);
-    cl_mem device_data   = clCreateBuffer(context, CL_MEM_READ_ONLY, DATA_SIZE_BYTES,NULL,&err);
-    cl_mem device_image  = clCreateBuffer(context, CL_MEM_READ_ONLY, IMAGE_SIZE_BYTES,NULL,&err);
+    printf("01\n");
+    cl_mem device_region = clCreateBuffer(context, CL_MEM_READ_ONLY, DATA_SIZE * sizeof(cl_uchar*) ,NULL,&err);
+    printf("02\n");
+    cl_mem device_data   = clCreateBuffer(context, CL_MEM_READ_ONLY, DATA_SIZE * sizeof(cl_uchar*), NULL,&err);
+    printf("03\n");
+    cl_mem device_image  = clCreateBuffer(context, CL_MEM_READ_ONLY, IMAGE_SIZE * sizeof(cl_uchar*),NULL,&err);
+    printf("04\n");
     clError("Error allocating memory", err);
 
     //Copy data to the device
-    clEnqueueWriteBuffer(queue, device_data, CL_FALSE, 0, DATA_SIZE_BYTES, data, 0, NULL, NULL);
-    clEnqueueWriteBuffer(queue, device_region, CL_FALSE, 0, DATA_SIZE_BYTES, region, 0, NULL, NULL);
+    clEnqueueWriteBuffer(queue, device_data  , CL_FALSE, 0, DATA_SIZE * sizeof(cl_uchar*), data  , 0, NULL, NULL);
+    printf("05\n");
+    clEnqueueWriteBuffer(queue, device_region, CL_FALSE, 0, DATA_SIZE * sizeof(cl_uchar*), region, 0, NULL, NULL);
+    printf("06\n");
 
     int grid_size = IMAGE_DIM;
     int block_size = IMAGE_DIM;
@@ -391,12 +398,14 @@ unsigned char* raycast_gpu(unsigned char* data, unsigned char* region){
 
     //Set up kernel arguments
     err = clSetKernelArg(kernel, 0, sizeof(device_data), (void*)&device_data);
+    printf("07\n");
     err = clSetKernelArg(kernel, 1, sizeof(device_region), (void*)&device_region);
+    printf("08\n");
     err = clSetKernelArg(kernel, 2, sizeof(device_image), (void*)&device_image);
     clError("Error setting arguments", err);
 
     //Run the kernel
-    size_t globalws[2] = {IMAGE_SIZE, IMAGE_SIZE};
+    const size_t globalws[2] = {IMAGE_SIZE, IMAGE_SIZE};
     clEnqueueNDRangeKernel(queue, kernel, 2, NULL, &globalws, NULL, 0, NULL, NULL);
     
     clFinish(queue);
