@@ -305,8 +305,8 @@ unsigned char* grow_region_serial(unsigned char* data){
     return region;
 }
 
-void grow_region_gpu(unsigned char* data){
-/*    cl_platform_id platform;
+unsigned char* grow_region_gpu(unsigned char* data){
+    cl_platform_id platform;
     cl_device_id device;
     cl_context context;
     cl_command_queue queue;
@@ -321,69 +321,59 @@ void grow_region_gpu(unsigned char* data){
     
     printPlatformInfo(platform);
 
+    queue = clCreateCommandQueue(context, device, 0, &err);
+    kernel = buildKernel("region.cl", "region", NULL, context, device);
 
     //Host variables
     unsigned char* host_region = (unsigned char*)calloc(sizeof(unsigned char), DATA_SIZE);
     int            host_unfinished;
 
-    cl_mem device_region     = clCreateBuffer(context, CL_MEM_READ_ONLY, DATA_SIZE * sizeof(cl_uchar*) ,NULL,&err);
-    cl_mem device_data       = clCreateBuffer(context, CL_MEM_READ_ONLY, DATA_SIZE * sizeof(cl_uchar*), NULL,&err);
-    cl_mem device_unfinished = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(bool*),NULL,&err);
+    cl_mem device_region     = clCreateBuffer(context, CL_MEM_READ_WRITE, DATA_SIZE * sizeof(cl_uchar) ,NULL,&err);
+    cl_mem device_data       = clCreateBuffer(context, CL_MEM_READ_ONLY, DATA_SIZE * sizeof(cl_uchar), NULL,&err);
+    cl_mem device_unfinished = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(cl_int), NULL,&err);
     clError("Error allocating memory", err);
-
-    //Copy data to the device
-    clEnqueueWriteBuffer(queue, device_data  , CL_FALSE, 0, DATA_SIZE * sizeof(cl_uchar*), data  , 0, NULL, NULL);
-    clEnqueueWriteBuffer(queue, device_region, CL_FALSE, 0, DATA_SIZE * sizeof(cl_uchar*), region, 0, NULL, NULL);
-
-    //Device variables
-    unsigned char*  
-    unsigned char*  
-    int*            
-
-    //Allocate device memory
-    cudaMalloc(&device_region, DATA_SIZE_BYTES);
-    cudaMalloc(&device_data, DATA_SIZE_BYTES);
-    cudaMalloc(&device_unfinished, sizeof(int));
 
     //plant seed
     int3 seed = {.x=50, .y=300, .z=300};
     host_region[index(seed.z, seed.y, seed.x)] = 2;
 
-    //Copy data to device
-    cudaMemcpy(device_region, host_region, DATA_SIZE_BYTES, cudaMemcpyHostToDevice);
-    cudaMemcpy(device_data, host_data, DATA_SIZE_BYTES, cudaMemcpyHostToDevice);
+    //Copy data to the device
+    clEnqueueWriteBuffer(queue, device_data  , CL_FALSE, 0, DATA_SIZE * sizeof(cl_uchar), data       , 0, NULL, NULL);
+    clEnqueueWriteBuffer(queue, device_region, CL_FALSE, 0, DATA_SIZE * sizeof(cl_uchar), host_region, 0, NULL, NULL);
 
     //Calculate block and grid sizes
-    dim3 block_size;
-    block_size.x = 7;
-    block_size.y = 7;
-    block_size.z = 7;
+    size_t global[] = { 512, 512, 512 }; 
+    size_t local[] = { 8, 8, 8 };
 
-    dim3 grid_size;
-    grid_size.x = DATA_DIM / block_size.x + 1; // Add 1 to round up instead of down.
-    grid_size.y = DATA_DIM / block_size.y + 1;
-    grid_size.z = DATA_DIM / block_size.z + 1;
 
     //Run kernel untill completion
     do{
         host_unfinished = 0;
-        cudaMemcpy(device_unfinished, &host_unfinished, 1, cudaMemcpyHostToDevice);
+        clEnqueueWriteBuffer(queue, device_unfinished, CL_FALSE, 0, sizeof(cl_int), &host_unfinished  , 0, NULL, NULL);
+        clFinish(queue);
 
-        region_grow_kernel<<<grid_size, block_size>>>(device_data, device_region, device_unfinished);
+        err = clSetKernelArg(kernel, 0, sizeof(device_data), (void*)&device_data);
+        err = clSetKernelArg(kernel, 1, sizeof(device_region), (void*)&device_region);
+        err = clSetKernelArg(kernel, 2, sizeof(device_unfinished), (void*)&device_unfinished);
+        clError("Error setting arguments", err);
 
-        cudaMemcpy(&host_unfinished, device_unfinished, 1, cudaMemcpyDeviceToHost);
+        //Run the kernel
+        clEnqueueNDRangeKernel(queue, kernel, 3, NULL, &global, &local, 0, NULL, NULL);
+        clFinish(queue);
+        clError("Error running kernel", err);
+
+        err = clEnqueueReadBuffer(queue, device_unfinished, CL_TRUE, 0, sizeof(cl_int), &host_unfinished, 0, NULL, NULL);
+        clFinish(queue);
+        clError("Error reading buffer 1", err);
 
     }while(host_unfinished);
 
     //Copy result to host
-    cudaMemcpy(host_region, device_region, DATA_SIZE_BYTES, cudaMemcpyDeviceToHost);
+    err = clEnqueueReadBuffer(queue, device_region, CL_TRUE, 0, DATA_SIZE * sizeof(cl_uchar), host_region, 0, NULL, NULL);
+    clFinish(queue);
+    clError("Error reading buffer 2", err);
 
-    //Free device memory
-    cudaFree(device_region);
-    cudaFree(device_data);
-    cudaFree(device_unfinished);
-
-    return host_region;*/
+    return host_region;
 }
 
 unsigned char* raycast_gpu(unsigned char* data, unsigned char* region){
@@ -426,8 +416,9 @@ unsigned char* raycast_gpu(unsigned char* data, unsigned char* region){
     clError("Error setting arguments", err);
 
     //Run the kernel
-    const size_t globalws[2] = {IMAGE_SIZE, IMAGE_SIZE};
-    clEnqueueNDRangeKernel(queue, kernel, 2, NULL, &globalws, NULL, 0, NULL, NULL);
+    const size_t globalws[2] = {IMAGE_DIM, IMAGE_DIM};
+    const size_t localws[2] = {8, 8};
+    clEnqueueNDRangeKernel(queue, kernel, 2, NULL, &globalws, &localws, 0, NULL, NULL);
     
     clFinish(queue);
 
@@ -441,9 +432,6 @@ unsigned char* raycast_gpu(unsigned char* data, unsigned char* region){
 
 
     //Free device memory
-//    cudaFree(device_region);
-//    cudaFree(device_data);
-//    cudaFree(device_image);
     return host_image;
 }
 
@@ -452,7 +440,7 @@ int main(int argc, char** argv){
     
     unsigned char* data = create_data();
     
-    unsigned char* region = grow_region_serial(data);
+    unsigned char* region = grow_region_gpu(data);
     
     unsigned char* image = raycast_gpu(data, region);
     

@@ -112,9 +112,9 @@ __kernel void raycast(__global unsigned char* data,__global unsigned char* regio
 
     int blocks_per_row = IMAGE_DIM;
 
-    int x = get_group_id(0) - (IMAGE_DIM/2);
+    int x = get_global_id(0) - (IMAGE_DIM/2);
 
-    int y = get_local_id(0) - (IMAGE_DIM/2);
+    int y = get_global_id(1) - (IMAGE_DIM/2);
 
     // Find the ray for this pixel
     floatk3 screen_center = add(camera, forward);
@@ -133,5 +133,5 @@ __kernel void raycast(__global unsigned char* data,__global unsigned char* regio
         color += value_at(pos, data) * (0.01 + r) ;       // Update the color based on data value, and if we're in the region
     }
     // Write final color to image
-    image[(y+(IMAGE_DIM/2)) * IMAGE_DIM + (x+(IMAGE_DIM/2))] = 255; //color > 255 ? 255 : color;
+    image[(y+(IMAGE_DIM/2)) * IMAGE_DIM + (x+(IMAGE_DIM/2))] =  color > 255 ? 255 : color;
 }
