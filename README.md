@@ -28,7 +28,7 @@ Two implementations of a parallel histogram equalization algorithm. One using **
 -------------------
 Same as in 2., only now we had 3 dimensions, and had to solve it with **CUDA**.
 
-One of the few exercises I actually had the time to finish properly. ((The Computer Design Project)[https://github.com/dmpro2014] often got in the way)
+One of the few exercises I actually had the time to finish properly. ([The Computer Design Project](https://github.com/dmpro2014) often got in the way)
 
 6. Region growing in OpenCL
 -------------------
